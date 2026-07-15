@@ -512,17 +512,11 @@ function bindGeneralActions() {
   $('#quickAddBtn').addEventListener('click', () => openTransactionModal());
   $('#exportBackupBtn').addEventListener('click', exportBackup);
   $('#settingsExportBtn').addEventListener('click', exportBackup);
-  $('#transactionSearch').addEventListener('input', debounce(() => { transactionPage = 1; renderTransactions(); }, 150));
+  $('#transactionSearch').addEventListener('input', debounce(() => { transactionPage = 1; renderTransactions(); }, 120));
   $('#transactionTypeFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
   $('#transactionOwnerFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
   $('#transactionCategoryFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
-  $('#clearFiltersBtn').addEventListener('click', () => {
-    $('#transactionSearch').value = '';
-    $('#transactionTypeFilter').value = 'all';
-    $('#transactionOwnerFilter').value = 'all';
-    $('#transactionCategoryFilter').value = 'all';
-    transactionPage = 1; renderTransactions();
-  });
+  $('#clearFiltersBtn').addEventListener('click', clearTransactionFilters);
   $('#selectAllTransactions').addEventListener('change', event => {
     visibleTransactionPage().forEach(tx => event.target.checked ? selectedTransactionIds.add(tx.id) : selectedTransactionIds.delete(tx.id));
     renderTransactions();
@@ -546,6 +540,16 @@ function bindGeneralActions() {
   $$('[data-close-modal]').forEach(btn => btn.addEventListener('click', closeModals));
   $('#modalBackdrop').addEventListener('click', closeModals);
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeModals(); });
+}
+
+function clearTransactionFilters() {
+  $('#transactionSearch').value = '';
+  $('#transactionTypeFilter').value = 'all';
+  $('#transactionOwnerFilter').value = 'all';
+  $('#transactionCategoryFilter').value = 'all';
+  transactionPage = 1;
+  renderTransactions();
+  $('#transactionSearch').focus({ preventScroll: true });
 }
 
 function bindForms() {
@@ -724,40 +728,110 @@ function detectExistingTransferPairs(txs) {
   return pairs;
 }
 
-function filteredTransactions() {
-  const search = $('#transactionSearch').value.trim().toLowerCase();
-  const type = $('#transactionTypeFilter').value;
-  const owner = $('#transactionOwnerFilter').value;
-  const category = $('#transactionCategoryFilter').value;
+function normalizeFilterText(value = '') {
+  return String(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function transactionFilterState() {
+  return {
+    search: $('#transactionSearch').value.trim(),
+    type: $('#transactionTypeFilter').value || 'all',
+    owner: $('#transactionOwnerFilter').value || 'all',
+    category: $('#transactionCategoryFilter').value || 'all'
+  };
+}
+
+function activeTransactionFilters(filters = transactionFilterState()) {
+  const active = [];
+  const typeLabels = { income: 'Income', expense: 'Expenses', transfer: 'Transfers', excluded: 'Excluded' };
+  if (filters.search) active.push({ key: 'search', label: `Search: “${filters.search}”` });
+  if (filters.type !== 'all') active.push({ key: 'type', label: typeLabels[filters.type] || filters.type });
+  if (filters.owner !== 'all') active.push({ key: 'owner', label: memberName(filters.owner) });
+  if (filters.category !== 'all') active.push({ key: 'category', label: filters.category });
+  return active;
+}
+
+function transactionSearchText(tx) {
+  const amount = Math.abs(Number(tx.amount || 0));
+  return normalizeFilterText([
+    tx.merchant,
+    tx.description,
+    tx.category || 'Other',
+    memberName(tx.owner),
+    accountName(tx.account),
+    state.accounts.find(account => account.id === tx.account)?.institution,
+    tx.notes,
+    transactionType(tx),
+    Number.isFinite(amount) ? amount.toFixed(2) : ''
+  ].filter(Boolean).join(' '));
+}
+
+function filteredTransactions(filters = transactionFilterState()) {
+  const search = normalizeFilterText(filters.search);
   return monthTransactions(selectedMonth())
-    .filter(tx => !search || `${tx.merchant || ''} ${tx.description || ''}`.toLowerCase().includes(search))
-    .filter(tx => type === 'all' || transactionType(tx) === type)
-    .filter(tx => owner === 'all' || tx.owner === owner)
-    .filter(tx => category === 'all' || (tx.category || 'Other') === category)
+    .filter(tx => !search || transactionSearchText(tx).includes(search))
+    .filter(tx => filters.type === 'all' || transactionType(tx) === filters.type)
+    .filter(tx => filters.owner === 'all' || tx.owner === filters.owner)
+    .filter(tx => filters.category === 'all' || (tx.category || 'Other') === filters.category)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 }
 
-function visibleTransactionPage() {
-  const rows = filteredTransactions();
+function visibleTransactionPage(rows = filteredTransactions()) {
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  transactionPage = Math.min(transactionPage, pages);
+  transactionPage = Math.max(1, Math.min(transactionPage, pages));
   return rows.slice((transactionPage - 1) * PAGE_SIZE, transactionPage * PAGE_SIZE);
 }
 
+function clearSingleTransactionFilter(key) {
+  const targets = {
+    search: ['#transactionSearch', ''],
+    type: ['#transactionTypeFilter', 'all'],
+    owner: ['#transactionOwnerFilter', 'all'],
+    category: ['#transactionCategoryFilter', 'all']
+  };
+  const target = targets[key];
+  if (!target) return;
+  $(target[0]).value = target[1];
+  transactionPage = 1;
+  renderTransactions();
+}
+
+function renderTransactionFilterStatus(filters, rows, monthRows) {
+  const active = activeTransactionFilters(filters);
+  const hasFilters = active.length > 0;
+  $('#transactionResultTitle').textContent = hasFilters ? 'Filtered transactions' : 'All transactions';
+  $('#transactionTableCount').textContent = hasFilters
+    ? `${rows.length} of ${monthRows.length} transaction${monthRows.length === 1 ? '' : 's'}`
+    : `${rows.length} transaction${rows.length === 1 ? '' : 's'}`;
+  $('#clearFiltersBtn').disabled = !hasFilters;
+  $('#transactionFilterStatus').classList.toggle('hidden', !hasFilters);
+  $('#transactionFilterSummary').textContent = `${rows.length} match${rows.length === 1 ? '' : 'es'} in the selected month`;
+  $('#activeTransactionFilters').innerHTML = active.map(filter => `<button class="filter-chip" type="button" data-filter-key="${filter.key}" aria-label="Remove ${escapeHtml(filter.label)} filter"><span>${escapeHtml(filter.label)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>`).join('');
+  $$('#activeTransactionFilters .filter-chip').forEach(button => button.addEventListener('click', () => clearSingleTransactionFilter(button.dataset.filterKey)));
+}
+
 function renderTransactions() {
-  const rows = filteredTransactions();
-  const visible = visibleTransactionPage();
-  $('#transactionResultTitle').textContent = rows.length === state.transactions.length ? 'All transactions' : 'Filtered transactions';
-  $('#transactionTableCount').textContent = `${rows.length} transaction${rows.length === 1 ? '' : 's'}`;
-  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="8">${emptyState('No matching transactions', 'Try changing the filters or import a statement.')}</td></tr>`;
-  $('#mobileTransactionList').innerHTML = visible.length ? visible.map(mobileTransactionCard).join('') : emptyState('No matching transactions', 'Try changing the filters or import a statement.');
+  const filters = transactionFilterState();
+  const monthRows = monthTransactions(selectedMonth());
+  const rows = filteredTransactions(filters);
+  const visible = visibleTransactionPage(rows);
+  renderTransactionFilterStatus(filters, rows, monthRows);
+  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="8">${emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.')}</td></tr>`;
+  $('#mobileTransactionList').innerHTML = visible.length ? visible.map(mobileTransactionCard).join('') : emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.');
   bindTransactionRowEvents();
   renderPagination(rows.length);
+  selectedTransactionIds = new Set([...selectedTransactionIds].filter(id => state.transactions.some(tx => tx.id === id)));
   const selected = selectedTransactionIds.size;
   $('#bulkActions').classList.toggle('hidden', !selected);
   $('#selectedCount').textContent = `${selected} selected`;
-  const allVisibleSelected = visible.length && visible.every(tx => selectedTransactionIds.has(tx.id));
-  $('#selectAllTransactions').checked = !!allVisibleSelected;
+  const allVisibleSelected = visible.length > 0 && visible.every(tx => selectedTransactionIds.has(tx.id));
+  $('#selectAllTransactions').checked = allVisibleSelected;
+  $('#selectAllTransactions').indeterminate = visible.some(tx => selectedTransactionIds.has(tx.id)) && !allVisibleSelected;
   $('#transactionCount').textContent = state.transactions.length;
   renderSessionInfo();
 }
@@ -827,7 +901,12 @@ function hydrateAllSelects() {
   ['#importOwner','#transactionOwnerInput','#ruleOwnerInput','#accountOwnerInput'].forEach(sel => { const old = $(sel)?.value; if ($(sel)) { $(sel).innerHTML = memberOptions; if ([...$(sel).options].some(o => o.value === old)) $(sel).value = old; } });
   const accountOptions = state.accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
   ['#importAccount','#transactionAccountInput'].forEach(sel => { const old = $(sel)?.value; if ($(sel)) { $(sel).innerHTML = accountOptions || '<option value="">No accounts available</option>'; if ([...$(sel).options].some(o => o.value === old)) $(sel).value = old; } });
-  const categoryOptions = DEFAULT_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('');
+  const availableCategories = [...new Set([
+    ...DEFAULT_CATEGORIES,
+    ...state.transactions.map(tx => tx.category).filter(Boolean),
+    ...state.rules.map(rule => rule.category).filter(Boolean)
+  ])].sort((a, b) => a.localeCompare(b));
+  const categoryOptions = availableCategories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
   ['#transactionCategoryInput','#ruleCategoryInput'].forEach(sel => { const old = $(sel)?.value; $(sel).innerHTML = categoryOptions; if ([...$(sel).options].some(o => o.value === old)) $(sel).value = old; });
   const oldCategory = $('#transactionCategoryFilter').value;
   $('#transactionCategoryFilter').innerHTML = `<option value="all">All categories</option>${categoryOptions}`;
