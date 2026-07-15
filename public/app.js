@@ -49,6 +49,7 @@ let saveTimer = null;
 let savePending = false;
 let saveRunning = false;
 let joinHousehold = false;
+let pendingImportedTypeRepairs = 0;
 const PAGE_SIZE = 25;
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -78,8 +79,11 @@ async function apiRequest(path, options = {}) {
 }
 
 function normalizeLoadedState(saved) {
-  if (!saved || typeof saved !== 'object') return structuredClone(DEFAULT_STATE);
-  return {
+  if (!saved || typeof saved !== 'object') {
+    pendingImportedTypeRepairs = 0;
+    return structuredClone(DEFAULT_STATE);
+  }
+  const normalized = {
     ...structuredClone(DEFAULT_STATE),
     ...saved,
     household: { ...DEFAULT_STATE.household, ...(saved.household || {}) },
@@ -90,6 +94,8 @@ function normalizeLoadedState(saved) {
     rules: Array.isArray(saved.rules) ? saved.rules : [],
     imports: Array.isArray(saved.imports) ? saved.imports : []
   };
+  pendingImportedTypeRepairs = repairImportedTransactionTypes(normalized);
+  return normalized;
 }
 
 function setSyncStatus(status, label) {
@@ -169,6 +175,7 @@ async function refreshState({ announce = true } = {}) {
     renderAll();
     renderSessionInfo();
     setSyncStatus('synced', 'Synced');
+    persistPendingImportedTypeRepairs();
     if (announce) toast('Household refreshed', 'The latest MongoDB-backed household data is now displayed.');
   } catch (error) {
     setSyncStatus('error', 'Refresh failed');
@@ -290,6 +297,7 @@ async function startAuthenticatedSession(session) {
   }
   renderSessionInfo();
   setSyncStatus('synced', 'Synced');
+  persistPendingImportedTypeRepairs();
 }
 
 function showSignedOut(clearSession = true) {
@@ -424,10 +432,40 @@ function applyRules(tx) {
   return result;
 }
 
-function autoCategory(text, amount) {
+const IMPORT_INCOME_PATTERNS = [
+  /\bpayroll\b/i, /\bsalary\b/i, /\bpaycheck\b/i, /\bwages?\b/i,
+  /\bdirect dep(?:osit)?\b/i, /\bemployer deposit\b/i, /\bsocial security\b/i,
+  /\bssa treas\b/i, /\bpension\b/i, /\bannuity\b/i, /\binterest earned\b/i
+];
+const IMPORT_EXPENSE_PATTERNS = [
+  /\b(?:debit|checkcard|card purchase|purchase|pos)\b/i, /\bwithdrawal\b/i,
+  /\batm\b/i, /\bservice fee\b/i, /\boverdraft fee\b/i, /\bmonthly fee\b/i,
+  /\bbill pay\b/i, /\bpayment to\b/i, /\brecurring (?:card )?purchase\b/i
+];
+const IMPORT_CREDIT_ADJUSTMENT_PATTERNS = [
+  /\brefund\b/i, /\breturned?\b/i, /\breversal\b/i, /\bcash ?back\b/i,
+  /\bstatement credit\b/i, /\bcredit adjustment\b/i, /\brebate\b/i
+];
+const IMPORT_INTERNAL_TRANSFER_PATTERNS = [
+  /\binternal transfer\b/i, /\btransfer (?:to|from)\b/i, /\bxfer (?:to|from)\b/i,
+  /\bmove money\b/i, /\baccount transfer\b/i
+];
+const IMPORT_CARD_PAYMENT_PATTERNS = [
+  /\b(?:online|automatic|autopay|mobile)\s+payment(?: received)?\b/i,
+  /\bpayment received\b/i,
+  /\bpayment[- ]thank you\b/i, /\bthank you for your payment\b/i,
+  /\bcredit card payment\b/i, /\bcard payment\b/i
+];
+
+function matchesAnyPattern(text, patterns) {
+  const value = String(text || '');
+  return patterns.some(pattern => pattern.test(value));
+}
+
+function categoryFromText(text) {
   const value = String(text || '').toLowerCase();
   const groups = [
-    ['Income', ['payroll', 'salary', 'direct dep', 'deposit', 'paycheck', 'income']],
+    ['Income', ['payroll', 'salary', 'direct dep', 'paycheck', 'income']],
     ['Groceries', ['kroger', 'whole foods', 'aldi', 'grocery', 'market', 'meijer', 'costco']],
     ['Dining', ['restaurant', 'cafe', 'coffee', 'starbucks', 'doordash', 'uber eats', 'grubhub', 'mcdonald', 'chipotle']],
     ['Transportation', ['shell', 'speedway', 'bp ', 'exxon', 'marathon', 'uber', 'lyft', 'parking', 'fuel', 'gas station']],
@@ -442,7 +480,109 @@ function autoCategory(text, amount) {
     ['Pets', ['petco', 'petsmart', 'veterinary', 'vet ']]
   ];
   for (const [category, tokens] of groups) if (tokens.some(token => value.includes(token))) return category;
-  return Number(amount) > 0 ? 'Income' : 'Other';
+  return '';
+}
+
+function autoCategory(text, amount) {
+  return categoryFromText(text) || (Number(amount) > 0 ? 'Income' : 'Other');
+}
+
+function importTransactionText(tx) {
+  return `${tx?.merchant || ''} ${tx?.description || ''}`.replace(/\s+/g, ' ').trim();
+}
+
+function hasIncomeSignal(text) {
+  return matchesAnyPattern(text, IMPORT_INCOME_PATTERNS);
+}
+
+function hasExpenseSignal(text) {
+  const category = categoryFromText(text);
+  return matchesAnyPattern(text, IMPORT_EXPENSE_PATTERNS) || (!!category && category !== 'Income');
+}
+
+function hasCreditAdjustmentSignal(text) {
+  return matchesAnyPattern(text, IMPORT_CREDIT_ADJUSTMENT_PATTERNS);
+}
+
+function hasTransferSignal(text, accountType = '') {
+  if (matchesAnyPattern(text, IMPORT_INTERNAL_TRANSFER_PATTERNS)) return true;
+  if (accountType === 'credit' && matchesAnyPattern(text, IMPORT_CARD_PAYMENT_PATTERNS)) return true;
+  return /\b(?:credit card|card) payment\b/i.test(String(text || ''));
+}
+
+function inferStatementConvention(rows, account = {}) {
+  if (account.type === 'credit') return 'credit-card';
+  const genericRows = rows.filter(row => !row.flowHint && row.amountSource !== 'debit-credit');
+  if (!genericRows.length) return 'explicit-columns';
+  let positiveExpense = 0;
+  let positiveIncome = 0;
+  let negativeExpense = 0;
+  let negativeIncome = 0;
+  for (const row of genericRows) {
+    const text = importTransactionText(row);
+    const amount = Number(row.amount);
+    if (!Number.isFinite(amount) || amount === 0) continue;
+    if (amount > 0 && hasExpenseSignal(text)) positiveExpense++;
+    if (amount > 0 && hasIncomeSignal(text)) positiveIncome++;
+    if (amount < 0 && hasExpenseSignal(text)) negativeExpense++;
+    if (amount < 0 && hasIncomeSignal(text)) negativeIncome++;
+  }
+  const allPositive = genericRows.every(row => Number(row.amount) > 0);
+  const positiveLooksLikeSpending = positiveExpense >= 2 && positiveExpense >= positiveIncome * 2;
+  if ((allPositive && positiveExpense >= 1 && positiveIncome === 0) || positiveLooksLikeSpending || negativeIncome > negativeExpense) {
+    return 'expenses-positive';
+  }
+  return 'expenses-negative';
+}
+
+function classifyImportedTransaction(raw, account = {}, convention = 'expenses-negative') {
+  const text = importTransactionText(raw);
+  const accountType = account.type || '';
+  if (hasTransferSignal(text, accountType)) return 'transfer';
+  if (hasCreditAdjustmentSignal(text)) return 'excluded';
+  if (hasIncomeSignal(text)) return 'income';
+  if (raw.flowHint === 'debit') return 'expense';
+  if (raw.flowHint === 'credit') return accountType === 'credit' ? 'transfer' : 'income';
+  if (hasExpenseSignal(text)) return 'expense';
+  if (accountType === 'credit' || convention === 'credit-card') return 'expense';
+  if (convention === 'expenses-positive') return Number(raw.amount) >= 0 ? 'expense' : 'income';
+  return Number(raw.amount) >= 0 ? 'income' : 'expense';
+}
+
+function repairImportedTransactionTypes(loadedState) {
+  if (!loadedState || !Array.isArray(loadedState.transactions)) return 0;
+  const accounts = new Map((loadedState.accounts || []).map(account => [account.id, account]));
+  let repaired = 0;
+  loadedState.transactions = loadedState.transactions.map(tx => {
+    if (!['csv', 'pdf'].includes(String(tx.source || '').toLowerCase()) || transactionType(tx) !== 'income') return tx;
+    const account = accounts.get(tx.account) || {};
+    const text = importTransactionText(tx);
+    let correctedType = '';
+    if (hasTransferSignal(text, account.type)) correctedType = 'transfer';
+    else if (hasCreditAdjustmentSignal(text)) correctedType = 'excluded';
+    else if (!hasIncomeSignal(text) && (account.type === 'credit' || hasExpenseSignal(text))) correctedType = 'expense';
+    if (!correctedType) return tx;
+    repaired++;
+    const category = correctedType === 'transfer'
+      ? 'Transfer'
+      : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
+        ? (categoryFromText(text) || 'Other')
+        : tx.category;
+    return {
+      ...tx,
+      type: correctedType,
+      amount: normalizeAmountForType(tx.amount, correctedType),
+      category,
+      updatedAt: new Date().toISOString()
+    };
+  });
+  return repaired;
+}
+
+function persistPendingImportedTypeRepairs() {
+  if (!pendingImportedTypeRepairs || !currentUser) return;
+  pendingImportedTypeRepairs = 0;
+  saveState({ immediate: true });
 }
 
 function selectedMonth() { return $('#monthFilter').value || currentMonthKey(); }
@@ -1062,18 +1202,22 @@ async function processStatementFile(file) {
   if (file.size > 15 * 1024 * 1024) toast('Large file', 'Processing may take longer than usual in your browser.');
   showImportStatus(true, 'Reading statement…', `Processing ${file.name}`);
   try {
-    let parsed;
-    if (extension === 'csv') parsed = await parseCsvFile(file);
-    else parsed = await parsePdfFile(file);
-    if (!parsed.length) throw new Error(extension === 'pdf' ? 'No transactions were detected. This may be a scanned PDF.' : 'No transaction rows were detected in the CSV.');
     const account = $('#importAccount').value;
-    const owner = $('#importOwner').value || state.accounts.find(a => a.id === account)?.owner || 'shared';
+    const accountRecord = state.accounts.find(item => item.id === account) || {};
+    let parsed;
+    if (extension === 'csv') parsed = await parseCsvFile(file, accountRecord);
+    else parsed = await parsePdfFile(file, accountRecord);
+    if (!parsed.length) throw new Error(extension === 'pdf' ? 'No transactions were detected. This may be a scanned PDF.' : 'No transaction rows were detected in the CSV.');
+    const owner = $('#importOwner').value || accountRecord.owner || 'shared';
+    const statementConvention = inferStatementConvention(parsed, accountRecord);
     const normalized = parsed.map(raw => {
+      const detectedType = raw.type || classifyImportedTransaction(raw, accountRecord, statementConvention);
+      const detectedAmount = normalizeAmountForType(raw.amount, detectedType);
       let tx = {
         id: uid('draft'), date: raw.date, merchant: raw.merchant || cleanMerchant(raw.description),
-        description: raw.description || raw.merchant || 'Imported transaction', amount: Number(raw.amount),
-        type: raw.type || (Number(raw.amount) >= 0 ? 'income' : 'expense'),
-        category: raw.category || autoCategory(`${raw.merchant || ''} ${raw.description || ''}`, raw.amount),
+        description: raw.description || raw.merchant || 'Imported transaction', amount: detectedAmount,
+        type: detectedType,
+        category: raw.category || (detectedType === 'income' ? 'Income' : detectedType === 'transfer' ? 'Transfer' : autoCategory(`${raw.merchant || ''} ${raw.description || ''}`, detectedAmount)),
         owner, account, notes: '', source: extension, selected: true
       };
       tx = applyRules(tx);
@@ -1100,7 +1244,7 @@ function showImportStatus(show, title = '', text = '') {
   if (show) { $('#importStatusTitle').textContent = title; $('#importStatusText').textContent = text; }
 }
 
-async function parseCsvFile(file) {
+async function parseCsvFile(file, account = {}) {
   const text = await file.text();
   const rows = parseCsv(text);
   if (rows.length < 2) return [];
@@ -1117,13 +1261,17 @@ async function parseCsvFile(file) {
     const date = parseDateValue(row[dateIndex]);
     const description = String(row[descIndex] || '').trim();
     let amount;
+    let amountSource = 'amount';
+    let flowHint = '';
     if (amountIndex >= 0) amount = parseMoneyValue(row[amountIndex]);
     else {
+      amountSource = 'debit-credit';
       const debit = debitIndex >= 0 ? Math.abs(parseMoneyValue(row[debitIndex]) || 0) : 0;
       const credit = creditIndex >= 0 ? Math.abs(parseMoneyValue(row[creditIndex]) || 0) : 0;
       amount = credit ? credit : -debit;
+      flowHint = credit ? 'credit' : debit ? 'debit' : '';
     }
-    return { date, description, merchant: cleanMerchant(description), amount };
+    return { date, description, merchant: cleanMerchant(description), amount, amountSource, flowHint };
   }).filter(row => row.date && row.description && Number.isFinite(row.amount) && row.amount !== 0);
 }
 
@@ -1154,7 +1302,7 @@ function findHeader(headers, candidates) {
   return -1;
 }
 
-async function parsePdfFile(file) {
+async function parsePdfFile(file, account = {}) {
   const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
   pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER;
   const data = await file.arrayBuffer();
@@ -1200,7 +1348,7 @@ function parseTransactionLines(lines) {
       const description = line.slice(dateMatch[0].length, amountToken.index).replace(/\s+/g,' ').trim();
       if (/debit|withdrawal|purchase|payment to/i.test(line) && amount > 0) amount = -amount;
       if (/credit|deposit|payment received/i.test(line) && amount < 0) amount = Math.abs(amount);
-      current = { date, description: description || 'Imported transaction', merchant: cleanMerchant(description), amount };
+      current = { date, description: description || 'Imported transaction', merchant: cleanMerchant(description), amount, amountSource: 'amount' };
       results.push(current);
     } else if (current && line.length < 120 && !/page \d|statement|balance|total|account number/i.test(line) && !dateMatch && !amountMatches.length) {
       current.description = `${current.description} ${line}`.replace(/\s+/g,' ').trim();
