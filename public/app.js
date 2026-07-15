@@ -397,6 +397,21 @@ function transactionType(tx) {
   return Number(tx.amount) >= 0 ? 'income' : 'expense';
 }
 
+function signedTransactionType(amount) {
+  return Number(amount || 0) >= 0 ? 'income' : 'expense';
+}
+
+function transactionTypeLabel(type) {
+  return ({ income: 'Income', expense: 'Expense', transfer: 'Transfer', excluded: 'Excluded' })[type] || String(type || 'Expense');
+}
+
+function transactionBankTypeLabel(tx) {
+  const bankType = String(tx?.bankType || '').trim();
+  const bankDirection = String(tx?.bankDirection || '').trim();
+  const flowHint = String(tx?.bankFlowHint || '').trim();
+  return bankType || bankDirection || flowHint || '';
+}
+
 function fingerprint(tx) {
   const date = tx.date || '';
   const amount = Number(tx.amount || 0).toFixed(2);
@@ -586,51 +601,21 @@ function isCreditCardPaymentText(text) {
 function classifyImportedBankTransaction(raw, account = {}) {
   const bankType = normalizeBankCode(raw?.bankType || raw?.bankTransactionType || raw?.transactionCode || raw?.entryType || '');
   const bankDirection = normalizeBankDirection(raw?.bankDirection || raw?.details || raw?.direction || '');
-  if (!bankType && !bankDirection) return '';
-
-  const text = importTransactionText(raw);
-  const accountType = account.type || '';
   const amount = Number(raw?.amount || 0);
 
-  if (CHASE_BANK_TYPE_TRANSFER_CODES.has(bankType)) return 'transfer';
+  // Imported bank activity is classified by the actual money direction. The statement's Type
+  // value is preserved as bankType for display and review, but it is not treated as a separate
+  // income/expense category. Negative amounts are expenses; positive amounts are income.
+  if (Number.isFinite(amount) && amount !== 0) return signedTransactionType(amount);
 
-  if (bankType === 'MISC_DEBIT' && isCreditCardPaymentText(text)) return 'transfer';
-  if (bankType === 'ACH_DEBIT' && hasTransferSignal(text, accountType) && !/\bvenmo\s+payment\b/i.test(text)) return 'transfer';
-
-  if (bankType === 'CHASE_TO_PARTNERFI' || bankType === 'QUICKPAY_DEBIT') return 'expense';
-  if (bankType === 'PARTNERFI_TO_CHASE' || bankType === 'QUICKPAY_CREDIT') return hasIncomeSignal(text) ? 'income' : 'transfer';
-
-  if (bankType === CHASE_BANK_TYPE_CARD_CODE) {
-    if (amount < 0) return 'expense';
-    if (isChaseCardTransferCredit(text)) return 'transfer';
-    return 'excluded';
-  }
-
-  if (bankType === 'ACH_CREDIT') {
-    if (hasIncomeSignal(text)) return 'income';
-    if (/\b(?:venmo\s+cashout|apple cash bank xfer|bank xfer|cash app)\b/i.test(text)) return 'transfer';
-    return accountType === 'credit' ? 'transfer' : 'excluded';
-  }
-
-  if (bankType === 'MISC_CREDIT') {
-    if (/\breal time transfer recd\b|\btransfer recd\b/i.test(text)) return 'transfer';
-    if (hasIncomeSignal(text)) return 'income';
-    return accountType === 'credit' ? 'transfer' : 'excluded';
-  }
-
-  if (bankType === 'ATM' || bankType === 'ATM_DEPOSIT' || bankType === 'CHECK_DEPOSIT') return 'income';
-  if (bankType === 'ACH_DEBIT' || bankType === 'FEE_TRANSACTION' || bankType === 'WIRE_OUTGOING') return 'expense';
-  if (bankType === 'MISC_DEBIT') return 'expense';
-
-  if (bankDirection === 'debit') return amount > 0 ? 'excluded' : 'expense';
-  if (bankDirection === 'credit') {
-    if (hasIncomeSignal(text)) return 'income';
-    if (hasTransferSignal(text, accountType)) return 'transfer';
-    return accountType === 'credit' ? 'transfer' : 'excluded';
-  }
+  if (bankDirection === 'debit') return 'expense';
+  if (bankDirection === 'credit') return 'income';
+  if (CHASE_BANK_TYPE_OUTFLOW_CODES.has(bankType) || bankType === CHASE_BANK_TYPE_CARD_CODE) return 'expense';
+  if (CHASE_BANK_TYPE_INFLOW_CODES.has(bankType) || CHASE_BANK_TYPE_TRANSFER_CODES.has(bankType)) return 'income';
 
   return '';
 }
+
 
 function inferStatementConvention(rows, account = {}) {
   if (account.type === 'credit') return 'credit-card';
@@ -658,37 +643,19 @@ function inferStatementConvention(rows, account = {}) {
 }
 
 function classifyImportedTransaction(raw, account = {}, convention = 'expenses-negative') {
-  const text = importTransactionText(raw);
-  const accountType = account.type || '';
   const amount = Number(raw.amount || 0);
+
+  // For imported statements, the amount sign is authoritative: negative numbers are expenses and
+  // positive numbers are income. The original bank-provided Type remains stored as bankType so the
+  // transaction still shows the rail/source used by the bank.
+  if (Number.isFinite(amount) && amount !== 0) return signedTransactionType(amount);
 
   const bankTypeClassification = classifyImportedBankTransaction(raw, account);
   if (bankTypeClassification) return bankTypeClassification;
 
-  // Transfer and adjustment wording is more specific than the bank's broad debit/credit label.
-  if (hasTransferSignal(text, accountType)) return 'transfer';
-  if (hasCreditAdjustmentSignal(text)) return 'excluded';
-
-  // Income requires explicit income evidence. "ACH credit", "Zelle credit", a positive Card
-  // transaction, or another generic credit only proves that money entered the account.
-  if (hasIncomeSignal(text)) return 'income';
-
-  // Explicit direction printed by the statement outranks amount-sign guesses. A generic credit is
-  // excluded from income totals unless the description independently identifies payroll/benefits.
-  if (raw.flowHint === 'debit') return 'expense';
-  if (raw.flowHint === 'credit') return accountType === 'credit' ? 'transfer' : 'excluded';
-  if (hasNonIncomeCreditSignal(text)) return accountType === 'credit' ? 'transfer' : 'excluded';
-
-  if (hasExpenseSignal(text)) return 'expense';
-  if (accountType === 'credit' || convention === 'credit-card') return 'expense';
-
-  // Chase-style PDF tables show signed amounts alongside a transaction type. For ambiguous rows,
-  // negative values are expenses; positive values are unverified credits, not automatic income.
-  if (raw.sourceFormat === 'pdf') return amount < 0 ? 'expense' : 'excluded';
-
-  if (convention === 'expenses-positive') return amount >= 0 ? 'expense' : 'excluded';
-  return amount < 0 ? 'expense' : 'excluded';
+  return convention === 'expenses-positive' ? 'expense' : 'income';
 }
+
 
 function repairImportedTransactionTypes(loadedState) {
   if (!loadedState || !Array.isArray(loadedState.transactions)) return 0;
@@ -699,28 +666,16 @@ function repairImportedTransactionTypes(loadedState) {
     if (!['csv', 'pdf'].includes(source)) return tx;
     const account = accounts.get(tx.account) || {};
     const currentType = transactionType(tx);
-    const text = importTransactionText(tx);
     const correctedType = classifyImportedTransaction({ ...tx, sourceFormat: source }, account, 'expenses-negative');
     if (!correctedType || correctedType === currentType) return tx;
 
-    const correctionIsSafe =
-      (currentType === 'income' && correctedType !== 'income')
-      || (correctedType === 'income' && hasIncomeSignal(text))
-      || (correctedType === 'transfer' && (hasTransferSignal(text, account.type) || normalizeBankCode(tx.bankType) === 'ACCT_XFER' || /CASH APP\*RAIDEN LABS/i.test(text)))
-      || (correctedType === 'expense' && currentType === 'income' && (hasExpenseSignal(text) || Number(tx.amount) < 0));
-
-    if (!correctionIsSafe) return tx;
-
     repaired++;
+    const text = importTransactionText(tx);
     const category = correctedType === 'income'
       ? 'Income'
-      : correctedType === 'transfer'
-        ? 'Transfer'
-        : correctedType === 'excluded' && (!tx.category || tx.category === 'Income')
-          ? 'Other'
-          : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
-            ? (categoryFromText(text) || 'Other')
-            : tx.category;
+      : (!tx.category || ['Income', 'Transfer', 'Excluded'].includes(tx.category))
+        ? (categoryFromText(text) || 'Other')
+        : tx.category;
     return {
       ...tx,
       type: correctedType,
@@ -731,6 +686,7 @@ function repairImportedTransactionTypes(loadedState) {
   });
   return repaired;
 }
+
 
 function persistPendingImportedTypeRepairs() {
   if (!pendingImportedTypeRepairs || !currentUser) return;
@@ -1060,6 +1016,10 @@ function transactionSearchText(tx) {
     state.accounts.find(account => account.id === tx.account)?.institution,
     tx.notes,
     transactionType(tx),
+    transactionTypeLabel(transactionType(tx)),
+    transactionBankTypeLabel(tx),
+    tx.bankDirection,
+    tx.bankFlowHint,
     Number.isFinite(amount) ? amount.toFixed(2) : ''
   ].filter(Boolean).join(' '));
 }
@@ -1131,10 +1091,12 @@ function renderTransactions() {
 
 function transactionTableRow(tx) {
   const type = transactionType(tx);
+  const bankType = transactionBankTypeLabel(tx);
+  const typeMeta = `${transactionTypeLabel(type)}${bankType ? ` · Statement type: ${bankType}` : ''}`;
   return `<tr data-id="${tx.id}">
     <td class="checkbox-cell"><input type="checkbox" class="transaction-select" ${selectedTransactionIds.has(tx.id) ? 'checked' : ''} aria-label="Select transaction" /></td>
     <td>${formatDate(tx.date)}</td>
-    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml(tx.description || '')}</span></div></td>
+    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml(tx.description || '')}</span><span>${escapeHtml(typeMeta)}</span></div></td>
     <td><span class="category-pill">${escapeHtml(tx.category || 'Other')}</span></td>
     <td><span class="owner-pill">${escapeHtml(memberName(tx.owner))}</span></td>
     <td>${escapeHtml(accountName(tx.account))}</td>
@@ -1145,9 +1107,10 @@ function transactionTableRow(tx) {
 
 function mobileTransactionCard(tx) {
   const type = transactionType(tx);
+  const bankType = transactionBankTypeLabel(tx);
   return `<div class="mobile-transaction-card" data-id="${tx.id}">
     <input type="checkbox" class="transaction-select" ${selectedTransactionIds.has(tx.id) ? 'checked' : ''} aria-label="Select transaction" />
-    <div class="mobile-transaction-main"><div class="mobile-transaction-title">${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</div><div class="mobile-transaction-meta"><span>${formatDate(tx.date)}</span><span>·</span><span>${escapeHtml(tx.category || 'Other')}</span><span>·</span><span>${escapeHtml(memberName(tx.owner))}</span></div></div>
+    <div class="mobile-transaction-main"><div class="mobile-transaction-title">${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</div><div class="mobile-transaction-meta"><span>${formatDate(tx.date)}</span><span>·</span><span>${escapeHtml(transactionTypeLabel(type))}</span>${bankType ? `<span>·</span><span>${escapeHtml(bankType)}</span>` : ''}<span>·</span><span>${escapeHtml(tx.category || 'Other')}</span><span>·</span><span>${escapeHtml(memberName(tx.owner))}</span></div></div>
     <div class="mobile-transaction-side"><span class="amount-value ${type}">${type === 'income' ? '+' : type === 'expense' ? '−' : ''}${money(Math.abs(Number(tx.amount)))}</span><button class="row-action edit-transaction" aria-label="Edit transaction"><svg viewBox="0 0 24 24"><path d="m4 16-.8 4 4-.8L18 8.4 15.6 6 4 16Z"/><path d="m13.8 7.8 2.4 2.4"/></svg></button></div>
   </div>`;
 }
@@ -1787,7 +1750,7 @@ function renderImportReview() {
   $('#importReviewBody').innerHTML = txs.map(tx => `<tr data-id="${tx.id}" class="${tx.duplicate ? 'duplicate-row' : ''}">
     <td><input type="checkbox" class="import-select" ${tx.selected ? 'checked' : ''} /></td>
     <td><input type="date" class="import-date" value="${tx.date}" /></td>
-    <td class="review-description"><input type="text" class="import-description" value="${escapeHtml(tx.merchant || tx.description)}" />${tx.duplicate ? '<div class="transfer-suggestion">Possible duplicate</div>' : tx.transferSuggestion ? '<div class="transfer-suggestion">Possible internal transfer</div>' : ''}</td>
+    <td class="review-description"><input type="text" class="import-description" value="${escapeHtml(tx.merchant || tx.description)}" />${transactionBankTypeLabel(tx) ? `<div class="transfer-suggestion">Statement type: ${escapeHtml(transactionBankTypeLabel(tx))}</div>` : ''}${tx.duplicate ? '<div class="transfer-suggestion">Possible duplicate</div>' : tx.transferSuggestion ? '<div class="transfer-suggestion">Possible internal transfer</div>' : ''}</td>
     <td><select class="import-category">${DEFAULT_CATEGORIES.map(c => `<option value="${c}" ${c === tx.category ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
     <td><select class="import-owner">${state.members.map(m => `<option value="${m.id}" ${m.id === tx.owner ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}</select></td>
     <td><select class="import-type"><option value="expense" ${tx.type === 'expense' ? 'selected' : ''}>Expense</option><option value="income" ${tx.type === 'income' ? 'selected' : ''}>Income</option><option value="transfer" ${tx.type === 'transfer' ? 'selected' : ''}>Transfer</option><option value="excluded" ${tx.type === 'excluded' ? 'selected' : ''}>Excluded</option></select></td>
@@ -1818,6 +1781,7 @@ function confirmImport() {
     amount: normalizeAmountForType(tx.amount, tx.type), type: tx.type,
     category: tx.type === 'transfer' ? 'Transfer' : tx.category,
     owner: tx.owner, account: tx.account, notes: tx.notes || '', source: tx.source,
+    bankType: tx.bankType || '', bankDirection: tx.bankDirection || '', bankFlowHint: tx.bankFlowHint || '',
     fingerprint: fingerprint(tx), createdAt: now, updatedAt: now
   }));
   state.transactions.push(...final);
