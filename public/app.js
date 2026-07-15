@@ -439,7 +439,8 @@ const IMPORT_INCOME_PATTERNS = [
   /\bdirect dep(?:osit)?\b/i, /\bemployer (?:deposit|payment)\b/i,
   /\bbonus\b/i, /\bcommission\b/i, /\btip(?:s| payout)?\b/i,
   /\bsocial security\b/i, /\bssa treas\b/i, /\bpension\b/i,
-  /\bannuity\b/i, /\bunemployment\b/i, /\binterest (?:earned|paid)\b/i
+  /\bannuity\b/i, /\bunemployment\b/i, /\binterest (?:earned|paid)\b/i,
+  /\bpayout\b/i, /\bpayou\b/i, /\bevent payou\b/i
 ];
 const IMPORT_EXPENSE_PATTERNS = [
   /\b(?:debit|checkcard|card purchase|purchase|pos)\b/i, /\bwithdrawal\b/i,
@@ -459,7 +460,9 @@ const IMPORT_INTERNAL_TRANSFER_PATTERNS = [
   // Chase identifies these incoming person-to-person credits separately from earned income.
   /\bzelle (?:payment )?from\b/i, /\bzelle credit\b/i,
   /\bvenmo cashout\b/i, /\bvenmo transfer (?:to|from)\b/i,
-  /\bpaypal transfer (?:to|from)\b/i, /\bcash app (?:cash ?out|transfer)\b/i
+  /\bpaypal transfer (?:to|from)\b/i, /\bcash app (?:cash ?out|transfer)\b/i,
+  /\bapple cash bank xfer\b/i, /\bbank xfer\b/i,
+  /\bcash app\*raiden labs\b/i
 ];
 const IMPORT_NON_INCOME_CREDIT_PATTERNS = [
   // These labels indicate an incoming credit, but do not establish that the money is income.
@@ -473,6 +476,19 @@ const IMPORT_CARD_PAYMENT_PATTERNS = [
   /\bpayment[- ]thank you\b/i, /\bthank you for your payment\b/i,
   /\bcredit card payment\b/i, /\bcard payment\b/i
 ];
+const CHASE_BANK_TYPE_TRANSFER_CODES = new Set([
+  'ACCT_XFER', 'LOAN_PMT'
+]);
+const CHASE_BANK_TYPE_OUTFLOW_CODES = new Set([
+  'CHASE_TO_PARTNERFI', 'QUICKPAY_DEBIT', 'ACH_DEBIT', 'MISC_DEBIT',
+  'FEE_TRANSACTION', 'WIRE_OUTGOING'
+]);
+const CHASE_BANK_TYPE_INFLOW_CODES = new Set([
+  'ACH_CREDIT', 'MISC_CREDIT', 'QUICKPAY_CREDIT', 'PARTNERFI_TO_CHASE',
+  'ATM', 'ATM_DEPOSIT', 'CHECK_DEPOSIT'
+]);
+const CHASE_BANK_TYPE_CARD_CODE = 'DEBIT_CARD';
+
 const PDF_CREDIT_SECTION_PATTERNS = [
   /\bdeposits?(?:\s+and\s+(?:other\s+)?(?:credits?|additions?))?\b/i,
   /\bcredits?(?:\s+and\s+deposits?)?\b/i,
@@ -546,6 +562,76 @@ function hasTransferSignal(text, accountType = '') {
   return /\b(?:credit card|card) payment\b/i.test(String(text || ''));
 }
 
+function normalizeBankCode(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normalizeBankDirection(value) {
+  const normalized = normalizeBankCode(value);
+  if (/^(CREDIT|CR|DEPOSIT|DSLIP)$/.test(normalized)) return 'credit';
+  if (/^(DEBIT|DBT|WITHDRAWAL|WD)$/.test(normalized)) return 'debit';
+  return '';
+}
+
+function isChaseCardTransferCredit(text) {
+  return /\bcash app\*raiden labs\b/i.test(String(text || ''))
+    || /\b(?:cash app|apple cash|venmo|paypal)\b.*\b(?:cash ?out|bank xfer|transfer)\b/i.test(String(text || ''));
+}
+
+function isCreditCardPaymentText(text) {
+  return /\b(?:citi|chase|capital one|discover|amex|american express|credit card|card)\b.*\b(?:online\s+)?payment\b/i.test(String(text || ''))
+    || /\bpayment to chase card\b/i.test(String(text || ''));
+}
+
+function classifyImportedBankTransaction(raw, account = {}) {
+  const bankType = normalizeBankCode(raw?.bankType || raw?.bankTransactionType || raw?.transactionCode || raw?.entryType || '');
+  const bankDirection = normalizeBankDirection(raw?.bankDirection || raw?.details || raw?.direction || '');
+  if (!bankType && !bankDirection) return '';
+
+  const text = importTransactionText(raw);
+  const accountType = account.type || '';
+  const amount = Number(raw?.amount || 0);
+
+  if (CHASE_BANK_TYPE_TRANSFER_CODES.has(bankType)) return 'transfer';
+
+  if (bankType === 'MISC_DEBIT' && isCreditCardPaymentText(text)) return 'transfer';
+  if (bankType === 'ACH_DEBIT' && hasTransferSignal(text, accountType) && !/\bvenmo\s+payment\b/i.test(text)) return 'transfer';
+
+  if (bankType === 'CHASE_TO_PARTNERFI' || bankType === 'QUICKPAY_DEBIT') return 'expense';
+  if (bankType === 'PARTNERFI_TO_CHASE' || bankType === 'QUICKPAY_CREDIT') return hasIncomeSignal(text) ? 'income' : 'transfer';
+
+  if (bankType === CHASE_BANK_TYPE_CARD_CODE) {
+    if (amount < 0) return 'expense';
+    if (isChaseCardTransferCredit(text)) return 'transfer';
+    return 'excluded';
+  }
+
+  if (bankType === 'ACH_CREDIT') {
+    if (hasIncomeSignal(text)) return 'income';
+    if (/\b(?:venmo\s+cashout|apple cash bank xfer|bank xfer|cash app)\b/i.test(text)) return 'transfer';
+    return accountType === 'credit' ? 'transfer' : 'excluded';
+  }
+
+  if (bankType === 'MISC_CREDIT') {
+    if (/\breal time transfer recd\b|\btransfer recd\b/i.test(text)) return 'transfer';
+    if (hasIncomeSignal(text)) return 'income';
+    return accountType === 'credit' ? 'transfer' : 'excluded';
+  }
+
+  if (bankType === 'ATM' || bankType === 'ATM_DEPOSIT' || bankType === 'CHECK_DEPOSIT') return 'income';
+  if (bankType === 'ACH_DEBIT' || bankType === 'FEE_TRANSACTION' || bankType === 'WIRE_OUTGOING') return 'expense';
+  if (bankType === 'MISC_DEBIT') return 'expense';
+
+  if (bankDirection === 'debit') return amount > 0 ? 'excluded' : 'expense';
+  if (bankDirection === 'credit') {
+    if (hasIncomeSignal(text)) return 'income';
+    if (hasTransferSignal(text, accountType)) return 'transfer';
+    return accountType === 'credit' ? 'transfer' : 'excluded';
+  }
+
+  return '';
+}
+
 function inferStatementConvention(rows, account = {}) {
   if (account.type === 'credit') return 'credit-card';
   const genericRows = rows.filter(row => !row.flowHint && row.amountSource !== 'debit-credit');
@@ -575,6 +661,9 @@ function classifyImportedTransaction(raw, account = {}, convention = 'expenses-n
   const text = importTransactionText(raw);
   const accountType = account.type || '';
   const amount = Number(raw.amount || 0);
+
+  const bankTypeClassification = classifyImportedBankTransaction(raw, account);
+  if (bankTypeClassification) return bankTypeClassification;
 
   // Transfer and adjustment wording is more specific than the bank's broad debit/credit label.
   if (hasTransferSignal(text, accountType)) return 'transfer';
@@ -607,24 +696,31 @@ function repairImportedTransactionTypes(loadedState) {
   let repaired = 0;
   loadedState.transactions = loadedState.transactions.map(tx => {
     const source = String(tx.source || '').toLowerCase();
-    if (!['csv', 'pdf'].includes(source) || transactionType(tx) !== 'income') return tx;
+    if (!['csv', 'pdf'].includes(source)) return tx;
     const account = accounts.get(tx.account) || {};
+    const currentType = transactionType(tx);
     const text = importTransactionText(tx);
-    let correctedType = '';
-    if (hasTransferSignal(text, account.type)) correctedType = 'transfer';
-    else if (hasCreditAdjustmentSignal(text)) correctedType = 'excluded';
-    else if (hasIncomeSignal(text)) return tx;
-    else if (hasNonIncomeCreditSignal(text)) correctedType = account.type === 'credit' ? 'transfer' : 'excluded';
-    else if (account.type === 'credit' || hasExpenseSignal(text)) correctedType = 'expense';
-    else correctedType = 'excluded';
+    const correctedType = classifyImportedTransaction({ ...tx, sourceFormat: source }, account, 'expenses-negative');
+    if (!correctedType || correctedType === currentType) return tx;
+
+    const correctionIsSafe =
+      (currentType === 'income' && correctedType !== 'income')
+      || (correctedType === 'income' && hasIncomeSignal(text))
+      || (correctedType === 'transfer' && (hasTransferSignal(text, account.type) || normalizeBankCode(tx.bankType) === 'ACCT_XFER' || /CASH APP\*RAIDEN LABS/i.test(text)))
+      || (correctedType === 'expense' && currentType === 'income' && (hasExpenseSignal(text) || Number(tx.amount) < 0));
+
+    if (!correctionIsSafe) return tx;
+
     repaired++;
-    const category = correctedType === 'transfer'
-      ? 'Transfer'
-      : correctedType === 'excluded' && (!tx.category || tx.category === 'Income')
-        ? 'Other'
-        : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
-          ? (categoryFromText(text) || 'Other')
-          : tx.category;
+    const category = correctedType === 'income'
+      ? 'Income'
+      : correctedType === 'transfer'
+        ? 'Transfer'
+        : correctedType === 'excluded' && (!tx.category || tx.category === 'Income')
+          ? 'Other'
+          : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
+            ? (categoryFromText(text) || 'Other')
+            : tx.category;
     return {
       ...tx,
       type: correctedType,
@@ -1281,7 +1377,9 @@ async function processStatementFile(file) {
             : detectedType === 'excluded'
               ? 'Other'
               : autoCategory(`${raw.merchant || ''} ${raw.description || ''}`, detectedAmount)),
-        owner, account, notes: '', source: extension, selected: true
+        owner, account, notes: '', source: extension,
+        bankType: raw.bankType || '', bankDirection: raw.bankDirection || '', bankFlowHint: raw.flowHint || '',
+        selected: true
       };
       tx = applyRules(tx);
       tx.fingerprint = fingerprint(tx);
@@ -1316,6 +1414,9 @@ async function parseCsvFile(file, account = {}) {
   const dataRows = rows.slice((headerIndex >= 0 ? headerIndex : 0) + 1);
   const dateIndex = findHeader(headers, ['date','transaction date','posted date','posting date']);
   const descIndex = findHeader(headers, ['description','merchant','name','details','transaction description','memo']);
+  const bankDirectionIndex = findHeader(headers, ['details','debit credit','debit/credit','transaction direction','direction']);
+  const bankTypeIndex = findHeader(headers, ['type','transaction type','transaction code','entry type']);
+  const balanceIndex = findHeader(headers, ['balance','running balance']);
   const amountIndex = findHeader(headers, ['amount','transaction amount']);
   const debitIndex = findHeader(headers, ['debit','withdrawal','withdrawals','charge']);
   const creditIndex = findHeader(headers, ['credit','deposit','deposits','payment']);
@@ -1323,18 +1424,32 @@ async function parseCsvFile(file, account = {}) {
   return dataRows.map(row => {
     const date = parseDateValue(row[dateIndex]);
     const description = String(row[descIndex] || '').trim();
+    const bankDirection = bankDirectionIndex >= 0 ? String(row[bankDirectionIndex] || '').trim() : '';
+    const bankType = bankTypeIndex >= 0 ? String(row[bankTypeIndex] || '').trim() : '';
+    const balance = balanceIndex >= 0 ? parseMoneyValue(row[balanceIndex]) : null;
     let amount;
     let amountSource = 'amount';
-    let flowHint = '';
+    let flowHint = normalizeBankDirection(bankDirection);
     if (amountIndex >= 0) amount = parseMoneyValue(row[amountIndex]);
     else {
       amountSource = 'debit-credit';
       const debit = debitIndex >= 0 ? Math.abs(parseMoneyValue(row[debitIndex]) || 0) : 0;
       const credit = creditIndex >= 0 ? Math.abs(parseMoneyValue(row[creditIndex]) || 0) : 0;
       amount = credit ? credit : -debit;
-      flowHint = credit ? 'credit' : debit ? 'debit' : '';
+      flowHint = credit ? 'credit' : debit ? 'debit' : flowHint;
     }
-    return { date, description, merchant: cleanMerchant(description), amount, amountSource, flowHint, sourceFormat: 'csv' };
+    return {
+      date,
+      description,
+      merchant: cleanMerchant(description),
+      amount,
+      amountSource,
+      flowHint,
+      bankDirection,
+      bankType,
+      balance,
+      sourceFormat: 'csv'
+    };
   }).filter(row => row.date && row.description && Number.isFinite(row.amount) && row.amount !== 0);
 }
 
