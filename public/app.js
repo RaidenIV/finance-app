@@ -435,16 +435,21 @@ function applyRules(tx) {
 const IMPORT_INCOME_PATTERNS = [
   /\bpayroll\b/i, /\bsalary\b/i, /\bpaycheck\b/i, /\bwages?\b/i,
   /\bdirect dep(?:osit)?\b/i, /\bemployer deposit\b/i, /\bsocial security\b/i,
-  /\bssa treas\b/i, /\bpension\b/i, /\bannuity\b/i, /\binterest earned\b/i
+  /\bssa treas\b/i, /\bpension\b/i, /\bannuity\b/i, /\binterest (?:earned|paid)\b/i,
+  /\b(?:cash|check|mobile|remote|branch|atm) deposit\b/i, /\bdeposit(?:ed)?\b/i,
+  /\bach credit\b/i, /\bincoming (?:ach|wire)\b/i, /\bcredit received\b/i
 ];
 const IMPORT_EXPENSE_PATTERNS = [
   /\b(?:debit|checkcard|card purchase|purchase|pos)\b/i, /\bwithdrawal\b/i,
   /\batm\b/i, /\bservice fee\b/i, /\boverdraft fee\b/i, /\bmonthly fee\b/i,
-  /\bbill pay\b/i, /\bpayment to\b/i, /\brecurring (?:card )?purchase\b/i
+  /\bbill pay\b/i, /\bpayment to\b/i, /\brecurring (?:card )?purchase\b/i,
+  /\b(?:ach|electronic) debit\b/i, /\bcheck paid\b/i, /\bfee charged\b/i,
+  /\binterest charged\b/i, /\bcash advance\b/i
 ];
 const IMPORT_CREDIT_ADJUSTMENT_PATTERNS = [
   /\brefund\b/i, /\breturned?\b/i, /\breversal\b/i, /\bcash ?back\b/i,
-  /\bstatement credit\b/i, /\bcredit adjustment\b/i, /\brebate\b/i
+  /\bstatement credit\b/i, /\bcredit adjustment\b/i, /\brebate\b/i,
+  /\bmerchant credit\b/i, /\bpromotional credit\b/i
 ];
 const IMPORT_INTERNAL_TRANSFER_PATTERNS = [
   /\binternal transfer\b/i, /\btransfer (?:to|from)\b/i, /\bxfer (?:to|from)\b/i,
@@ -455,6 +460,21 @@ const IMPORT_CARD_PAYMENT_PATTERNS = [
   /\bpayment received\b/i,
   /\bpayment[- ]thank you\b/i, /\bthank you for your payment\b/i,
   /\bcredit card payment\b/i, /\bcard payment\b/i
+];
+const PDF_CREDIT_SECTION_PATTERNS = [
+  /\bdeposits?(?:\s+and\s+(?:other\s+)?(?:credits?|additions?))?\b/i,
+  /\bcredits?(?:\s+and\s+deposits?)?\b/i,
+  /\belectronic deposits?\b/i, /\bdirect deposits?\b/i, /\bother deposits?\b/i,
+  /\badditions?\b/i, /\bincoming (?:payments?|transfers?|wires?)\b/i,
+  /\binterest (?:earned|paid)\b/i
+];
+const PDF_DEBIT_SECTION_PATTERNS = [
+  /\bwithdrawals?(?:\s+and\s+(?:other\s+)?debits?)?\b/i,
+  /\bdebits?(?:\s+and\s+withdrawals?)?\b/i,
+  /\belectronic withdrawals?\b/i, /\batm(?:\s+and)?\s+debit card withdrawals?\b/i,
+  /\bchecks? paid\b/i, /\bother withdrawals?\b/i, /\bpayments? and other debits?\b/i,
+  /\bpurchases?(?:\s+and\s+adjustments?)?\b/i, /\bfees?(?:\s+charged)?\b/i,
+  /\binterest charged\b/i, /\bcash advances?\b/i
 ];
 
 function matchesAnyPattern(text, patterns) {
@@ -540,11 +560,19 @@ function classifyImportedTransaction(raw, account = {}, convention = 'expenses-n
   const accountType = account.type || '';
   if (hasTransferSignal(text, accountType)) return 'transfer';
   if (hasCreditAdjustmentSignal(text)) return 'excluded';
-  if (hasIncomeSignal(text)) return 'income';
+
+  // Explicit debit/credit information printed by the statement outranks amount-sign guesses.
   if (raw.flowHint === 'debit') return 'expense';
   if (raw.flowHint === 'credit') return accountType === 'credit' ? 'transfer' : 'income';
+
+  if (hasIncomeSignal(text)) return 'income';
   if (hasExpenseSignal(text)) return 'expense';
   if (accountType === 'credit' || convention === 'credit-card') return 'expense';
+
+  // PDF transaction tables frequently print all values as positive numbers and use sections or
+  // debit/credit columns to communicate direction. Ambiguous PDF rows must not become income.
+  if (raw.sourceFormat === 'pdf') return 'expense';
+
   if (convention === 'expenses-positive') return Number(raw.amount) >= 0 ? 'expense' : 'income';
   return Number(raw.amount) >= 0 ? 'income' : 'expense';
 }
@@ -554,13 +582,14 @@ function repairImportedTransactionTypes(loadedState) {
   const accounts = new Map((loadedState.accounts || []).map(account => [account.id, account]));
   let repaired = 0;
   loadedState.transactions = loadedState.transactions.map(tx => {
-    if (!['csv', 'pdf'].includes(String(tx.source || '').toLowerCase()) || transactionType(tx) !== 'income') return tx;
+    const source = String(tx.source || '').toLowerCase();
+    if (!['csv', 'pdf'].includes(source) || transactionType(tx) !== 'income') return tx;
     const account = accounts.get(tx.account) || {};
     const text = importTransactionText(tx);
     let correctedType = '';
     if (hasTransferSignal(text, account.type)) correctedType = 'transfer';
     else if (hasCreditAdjustmentSignal(text)) correctedType = 'excluded';
-    else if (!hasIncomeSignal(text) && (account.type === 'credit' || hasExpenseSignal(text))) correctedType = 'expense';
+    else if (!hasIncomeSignal(text) && (source === 'pdf' || account.type === 'credit' || hasExpenseSignal(text))) correctedType = 'expense';
     if (!correctedType) return tx;
     repaired++;
     const category = correctedType === 'transfer'
@@ -1271,7 +1300,7 @@ async function parseCsvFile(file, account = {}) {
       amount = credit ? credit : -debit;
       flowHint = credit ? 'credit' : debit ? 'debit' : '';
     }
-    return { date, description, merchant: cleanMerchant(description), amount, amountSource, flowHint };
+    return { date, description, merchant: cleanMerchant(description), amount, amountSource, flowHint, sourceFormat: 'csv' };
   }).filter(row => row.date && row.description && Number.isFinite(row.amount) && row.amount !== 0);
 }
 
@@ -1311,10 +1340,10 @@ async function parsePdfFile(file, account = {}) {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
     const page = await pdf.getPage(pageNumber);
     const content = await page.getTextContent();
-    const lines = groupPdfItemsIntoLines(content.items);
+    const lines = groupPdfItemsIntoLines(content.items).map(line => ({ ...line, pageNumber }));
     allLines.push(...lines);
   }
-  return parseTransactionLines(allLines);
+  return parseTransactionLines(allLines, account);
 }
 
 function groupPdfItemsIntoLines(items) {
@@ -1327,31 +1356,224 @@ function groupPdfItemsIntoLines(items) {
     const y = item.transform[5];
     let row = rows.find(r => Math.abs(r.y - y) <= 2.5);
     if (!row) { row = { y, items: [] }; rows.push(row); }
-    row.items.push({ x: item.transform[4], text: item.str });
+    const text = String(item.str || '').replace(/\s+/g, ' ').trim();
+    if (text) row.items.push({ x: item.transform[4], width: Number(item.width || 0), text });
   });
-  return rows.sort((a,b) => b.y - a.y).map(row => row.items.sort((a,b) => a.x - b.x).map(i => i.text).join(' ').replace(/\s+/g,' ').trim()).filter(Boolean);
+  return rows.sort((a,b) => b.y - a.y).map(row => {
+    const orderedItems = row.items.sort((a,b) => a.x - b.x);
+    let text = '';
+    const segments = [];
+    orderedItems.forEach(item => {
+      if (text) text += ' ';
+      const start = text.length;
+      text += item.text;
+      segments.push({ start, end: text.length, x: item.x, width: item.width, text: item.text });
+    });
+    return { y: row.y, text, items: orderedItems, segments };
+  }).filter(line => line.text);
 }
 
-function parseTransactionLines(lines) {
+function getPdfLineText(line) {
+  return typeof line === 'string' ? line : String(line?.text || '');
+}
+
+function pdfHeaderX(line, patterns) {
+  if (!line || typeof line === 'string' || !Array.isArray(line.items)) return null;
+  const positions = [];
+  line.items.forEach(item => {
+    for (const pattern of patterns) {
+      const match = String(item.text || '').match(pattern);
+      if (!match) continue;
+      const offset = Number(match.index || 0) / Math.max(1, String(item.text || '').length);
+      positions.push(Number(item.x || 0) + Number(item.width || 0) * offset);
+      break;
+    }
+  });
+  if (!positions.length) return null;
+  return positions.reduce((sum, position) => sum + position, 0) / positions.length;
+}
+
+function detectPdfColumnMap(line, accountType = '') {
+  const text = getPdfLineText(line);
+  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!/\bdate\b/.test(normalized)) return null;
+  const hasBalance = /\bbalance\b/.test(normalized);
+  const hasDebit = /\bwithdrawals?\b|\bdebits?\b|\bcharges?\b|\bsubtractions?\b/.test(normalized);
+  const hasCredit = /\bdeposits?\b|\bcredits?\b|\badditions?\b/.test(normalized);
+  const hasAmount = /\bamount\b/.test(normalized);
+  if (!hasBalance && !hasDebit && !hasCredit && !hasAmount) return null;
+
+  const columns = {
+    debit: hasDebit ? pdfHeaderX(line, [/withdraw/i, /debit/i, /charge/i, /subtract/i]) : null,
+    credit: hasCredit ? pdfHeaderX(line, [/deposit/i, /credit/i, /addition/i]) : null,
+    amount: hasAmount ? pdfHeaderX(line, [/amount/i]) : null,
+    balance: hasBalance ? pdfHeaderX(line, [/balance/i]) : null,
+    balanceOnly: hasBalance && !hasDebit && !hasCredit && !hasAmount
+  };
+
+  // A credit-card header labeled "Payments and Credits" represents money credited to the card,
+  // not household income. The account-aware classifier handles that flow as a transfer/credit.
+  if (accountType === 'credit' && /payments?\s+(?:and|&)\s+credits?/.test(normalized)) {
+    columns.credit = columns.credit ?? pdfHeaderX(line, [/payment/i, /credit/i]);
+  }
+  return columns;
+}
+
+function detectPdfSectionFlow(text, accountType = '') {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value || value.length > 110) return '';
+  if (accountType === 'credit' && /\bpayments?\s+(?:and|&)\s+credits?\b/i.test(value)) return 'credit';
+  if (matchesAnyPattern(value, PDF_DEBIT_SECTION_PATTERNS)) return 'debit';
+  if (matchesAnyPattern(value, PDF_CREDIT_SECTION_PATTERNS)) return 'credit';
+  return '';
+}
+
+function looksLikePdfTableHeader(text) {
+  const value = String(text || '').toLowerCase();
+  return /\bdate\b/.test(value) && /\b(?:description|details?|transaction|amount|debit|credit|withdrawal|deposit|balance)\b/.test(value);
+}
+
+function looksLikePdfSummaryLine(text) {
+  const value = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return /\b(?:beginning|ending|opening|closing|average daily|minimum daily|maximum daily) balance\b/.test(value)
+    || /\b(?:account|statement|daily balance|balance) summary\b/.test(value)
+    || /^total\b/.test(value)
+    || /\btotal (?:deposits?|withdrawals?|credits?|debits?|fees?|purchases?|payments?)\b/.test(value);
+}
+
+function extractPdfMoneyMatches(line) {
+  const text = getPdfLineText(line);
+  const moneyPattern = /(?:\(?-?\$?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?|-?\$?\s*\d+\.\d{2})/g;
+  return [...text.matchAll(moneyPattern)].map(match => {
+    const index = Number(match.index || 0);
+    const mappedIndex = index + (match[0].match(/^\s*/)?.[0].length || 0);
+    let x = null;
+    if (line && typeof line !== 'string' && Array.isArray(line.segments)) {
+      const segment = line.segments.find(item => mappedIndex >= item.start && mappedIndex < item.end);
+      if (segment) {
+        const relative = Math.max(0, mappedIndex - segment.start) / Math.max(1, segment.end - segment.start);
+        x = Number(segment.x || 0) + Number(segment.width || 0) * relative;
+      }
+    }
+    return { text: match[0], index, x };
+  });
+}
+
+function nearestPdfColumn(x, columns) {
+  if (!Number.isFinite(x) || !columns) return { key: '', distance: Infinity };
+  const candidates = ['debit', 'credit', 'amount', 'balance']
+    .filter(key => Number.isFinite(columns[key]))
+    .map(key => ({ key, position: Number(columns[key]) }))
+    .sort((a, b) => a.position - b.position);
+  if (!candidates.length) return { key: '', distance: Infinity };
+
+  // Statement values are commonly right-aligned within the column that starts at the header's X
+  // position. Prefer the nearest column start at or to the left of the value, then fall back to
+  // ordinary proximity when the value begins before the first header.
+  const left = [...candidates].reverse().find(item => item.position <= x + 4);
+  const selected = left || [...candidates].sort((a, b) => Math.abs(x - a.position) - Math.abs(x - b.position))[0];
+  return { key: selected.key, distance: Math.abs(x - selected.position) };
+}
+
+function inferPdfInlineFlow(text, accountType = '') {
+  const value = String(text || '');
+  if (matchesAnyPattern(value, IMPORT_EXPENSE_PATTERNS)) return 'debit';
+  if (hasIncomeSignal(value)) return 'credit';
+  if (accountType === 'credit' && matchesAnyPattern(value, IMPORT_CARD_PAYMENT_PATTERNS)) return 'credit';
+  return '';
+}
+
+function choosePdfTransactionAmount(line, amountMatches, columns, sectionFlowHint, accountType = '') {
+  if (!amountMatches.length) return null;
+  let selected = null;
+  let columnKey = '';
+
+  if (columns && !columns.balanceOnly) {
+    const positioned = amountMatches
+      .map(match => ({ match, nearest: nearestPdfColumn(match.x, columns) }))
+      .filter(item => item.nearest.key && item.nearest.key !== 'balance');
+    if (positioned.length) {
+      positioned.sort((a, b) => a.match.index - b.match.index || a.nearest.distance - b.nearest.distance);
+      selected = positioned[0].match;
+      columnKey = positioned[0].nearest.key;
+    }
+  }
+
+  // In transaction tables that also show a running balance, the transaction amount is normally
+  // the first monetary value and the balance is the final value. Never default to the final value.
+  if (!selected) selected = amountMatches[0];
+
+  let flowHint = columnKey === 'debit' ? 'debit' : columnKey === 'credit' ? 'credit' : '';
+  if (!flowHint) flowHint = inferPdfInlineFlow(getPdfLineText(line), accountType);
+  if (!flowHint) flowHint = sectionFlowHint;
+
+  return { ...selected, flowHint, columnKey };
+}
+
+function parseTransactionLines(lines, account = {}) {
   const results = [];
   const datePattern = /^(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,?\s+\d{2,4})?)/i;
-  const moneyPattern = /(?:\(?-?\$?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?|-?\$?\s*\d+\.\d{2})/g;
   let current = null;
+  let sectionFlowHint = '';
+  let columns = null;
+  let currentPage = null;
+
   for (const line of lines) {
-    const dateMatch = line.match(datePattern);
-    const amountMatches = [...line.matchAll(moneyPattern)].map(m => ({ text: m[0], index: m.index }));
+    const text = getPdfLineText(line).replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+
+    if (line && typeof line !== 'string' && line.pageNumber !== currentPage) {
+      currentPage = line.pageNumber;
+      columns = null;
+    }
+
+    const dateMatch = text.match(datePattern);
+    const detectedColumns = detectPdfColumnMap(line, account.type || '');
+    if (detectedColumns && looksLikePdfTableHeader(text)) {
+      columns = detectedColumns;
+      current = null;
+      continue;
+    }
+
+    if (!dateMatch) {
+      const detectedSection = detectPdfSectionFlow(text, account.type || '');
+      if (detectedSection) {
+        sectionFlowHint = detectedSection;
+        current = null;
+        continue;
+      }
+    }
+
+    if (looksLikePdfSummaryLine(text)) {
+      current = null;
+      continue;
+    }
+
+    const amountMatches = extractPdfMoneyMatches(line);
     if (dateMatch && amountMatches.length) {
-      const amountToken = amountMatches[amountMatches.length - 1];
+      if (columns?.balanceOnly) continue;
+      const selected = choosePdfTransactionAmount(line, amountMatches, columns, sectionFlowHint, account.type || '');
+      if (!selected) continue;
       const date = parseDateValue(dateMatch[1]);
       if (!date) continue;
-      let amount = parseMoneyValue(amountToken.text);
-      const description = line.slice(dateMatch[0].length, amountToken.index).replace(/\s+/g,' ').trim();
-      if (/debit|withdrawal|purchase|payment to/i.test(line) && amount > 0) amount = -amount;
-      if (/credit|deposit|payment received/i.test(line) && amount < 0) amount = Math.abs(amount);
-      current = { date, description: description || 'Imported transaction', merchant: cleanMerchant(description), amount, amountSource: 'amount' };
+
+      let amount = parseMoneyValue(selected.text);
+      if (selected.flowHint === 'debit') amount = -Math.abs(amount);
+      else if (selected.flowHint === 'credit') amount = Math.abs(amount);
+
+      const description = text.slice(dateMatch[0].length, selected.index).replace(/\s+/g, ' ').trim();
+      current = {
+        date,
+        description: description || 'Imported transaction',
+        merchant: cleanMerchant(description),
+        amount,
+        amountSource: selected.columnKey === 'debit' || selected.columnKey === 'credit' ? 'debit-credit' : 'pdf-table',
+        flowHint: selected.flowHint,
+        sourceFormat: 'pdf'
+      };
       results.push(current);
-    } else if (current && line.length < 120 && !/page \d|statement|balance|total|account number/i.test(line) && !dateMatch && !amountMatches.length) {
-      current.description = `${current.description} ${line}`.replace(/\s+/g,' ').trim();
+    } else if (current && text.length < 120 && !/page \d|statement|balance|total|account number/i.test(text) && !dateMatch && !amountMatches.length) {
+      current.description = `${current.description} ${text}`.replace(/\s+/g, ' ').trim();
       current.merchant = cleanMerchant(current.description);
     }
   }
