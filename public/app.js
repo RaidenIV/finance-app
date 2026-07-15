@@ -433,11 +433,13 @@ function applyRules(tx) {
 }
 
 const IMPORT_INCOME_PATTERNS = [
+  // Only explicit earned/benefit income indicators qualify as household income. Bank transaction
+  // types such as "ACH credit" describe money direction, not whether the credit is income.
   /\bpayroll\b/i, /\bsalary\b/i, /\bpaycheck\b/i, /\bwages?\b/i,
-  /\bdirect dep(?:osit)?\b/i, /\bemployer deposit\b/i, /\bsocial security\b/i,
-  /\bssa treas\b/i, /\bpension\b/i, /\bannuity\b/i, /\binterest (?:earned|paid)\b/i,
-  /\b(?:cash|check|mobile|remote|branch|atm) deposit\b/i, /\bdeposit(?:ed)?\b/i,
-  /\bach credit\b/i, /\bincoming (?:ach|wire)\b/i, /\bcredit received\b/i
+  /\bdirect dep(?:osit)?\b/i, /\bemployer (?:deposit|payment)\b/i,
+  /\bbonus\b/i, /\bcommission\b/i, /\btip(?:s| payout)?\b/i,
+  /\bsocial security\b/i, /\bssa treas\b/i, /\bpension\b/i,
+  /\bannuity\b/i, /\bunemployment\b/i, /\binterest (?:earned|paid)\b/i
 ];
 const IMPORT_EXPENSE_PATTERNS = [
   /\b(?:debit|checkcard|card purchase|purchase|pos)\b/i, /\bwithdrawal\b/i,
@@ -453,7 +455,17 @@ const IMPORT_CREDIT_ADJUSTMENT_PATTERNS = [
 ];
 const IMPORT_INTERNAL_TRANSFER_PATTERNS = [
   /\binternal transfer\b/i, /\btransfer (?:to|from)\b/i, /\bxfer (?:to|from)\b/i,
-  /\bmove money\b/i, /\baccount transfer\b/i
+  /\bmove money\b/i, /\baccount transfer\b/i,
+  // Chase identifies these incoming person-to-person credits separately from earned income.
+  /\bzelle (?:payment )?from\b/i, /\bzelle credit\b/i,
+  /\bvenmo cashout\b/i, /\bvenmo transfer (?:to|from)\b/i,
+  /\bpaypal transfer (?:to|from)\b/i, /\bcash app (?:cash ?out|transfer)\b/i
+];
+const IMPORT_NON_INCOME_CREDIT_PATTERNS = [
+  // These labels indicate an incoming credit, but do not establish that the money is income.
+  /\bach credit\b/i, /\bzelle credit\b/i, /\bcredit received\b/i,
+  /\bincoming (?:ach|wire)\b/i, /\bcard credit\b/i,
+  /\b(?:edi|ppd|ccd|web) (?:credit|payment)\b/i
 ];
 const IMPORT_CARD_PAYMENT_PATTERNS = [
   /\b(?:online|automatic|autopay|mobile)\s+payment(?: received)?\b/i,
@@ -524,6 +536,10 @@ function hasCreditAdjustmentSignal(text) {
   return matchesAnyPattern(text, IMPORT_CREDIT_ADJUSTMENT_PATTERNS);
 }
 
+function hasNonIncomeCreditSignal(text) {
+  return matchesAnyPattern(text, IMPORT_NON_INCOME_CREDIT_PATTERNS);
+}
+
 function hasTransferSignal(text, accountType = '') {
   if (matchesAnyPattern(text, IMPORT_INTERNAL_TRANSFER_PATTERNS)) return true;
   if (accountType === 'credit' && matchesAnyPattern(text, IMPORT_CARD_PAYMENT_PATTERNS)) return true;
@@ -558,23 +574,31 @@ function inferStatementConvention(rows, account = {}) {
 function classifyImportedTransaction(raw, account = {}, convention = 'expenses-negative') {
   const text = importTransactionText(raw);
   const accountType = account.type || '';
+  const amount = Number(raw.amount || 0);
+
+  // Transfer and adjustment wording is more specific than the bank's broad debit/credit label.
   if (hasTransferSignal(text, accountType)) return 'transfer';
   if (hasCreditAdjustmentSignal(text)) return 'excluded';
 
-  // Explicit debit/credit information printed by the statement outranks amount-sign guesses.
-  if (raw.flowHint === 'debit') return 'expense';
-  if (raw.flowHint === 'credit') return accountType === 'credit' ? 'transfer' : 'income';
-
+  // Income requires explicit income evidence. "ACH credit", "Zelle credit", a positive Card
+  // transaction, or another generic credit only proves that money entered the account.
   if (hasIncomeSignal(text)) return 'income';
+
+  // Explicit direction printed by the statement outranks amount-sign guesses. A generic credit is
+  // excluded from income totals unless the description independently identifies payroll/benefits.
+  if (raw.flowHint === 'debit') return 'expense';
+  if (raw.flowHint === 'credit') return accountType === 'credit' ? 'transfer' : 'excluded';
+  if (hasNonIncomeCreditSignal(text)) return accountType === 'credit' ? 'transfer' : 'excluded';
+
   if (hasExpenseSignal(text)) return 'expense';
   if (accountType === 'credit' || convention === 'credit-card') return 'expense';
 
-  // PDF transaction tables frequently print all values as positive numbers and use sections or
-  // debit/credit columns to communicate direction. Ambiguous PDF rows must not become income.
-  if (raw.sourceFormat === 'pdf') return 'expense';
+  // Chase-style PDF tables show signed amounts alongside a transaction type. For ambiguous rows,
+  // negative values are expenses; positive values are unverified credits, not automatic income.
+  if (raw.sourceFormat === 'pdf') return amount < 0 ? 'expense' : 'excluded';
 
-  if (convention === 'expenses-positive') return Number(raw.amount) >= 0 ? 'expense' : 'income';
-  return Number(raw.amount) >= 0 ? 'income' : 'expense';
+  if (convention === 'expenses-positive') return amount >= 0 ? 'expense' : 'excluded';
+  return amount < 0 ? 'expense' : 'excluded';
 }
 
 function repairImportedTransactionTypes(loadedState) {
@@ -589,14 +613,18 @@ function repairImportedTransactionTypes(loadedState) {
     let correctedType = '';
     if (hasTransferSignal(text, account.type)) correctedType = 'transfer';
     else if (hasCreditAdjustmentSignal(text)) correctedType = 'excluded';
-    else if (!hasIncomeSignal(text) && (source === 'pdf' || account.type === 'credit' || hasExpenseSignal(text))) correctedType = 'expense';
-    if (!correctedType) return tx;
+    else if (hasIncomeSignal(text)) return tx;
+    else if (hasNonIncomeCreditSignal(text)) correctedType = account.type === 'credit' ? 'transfer' : 'excluded';
+    else if (account.type === 'credit' || hasExpenseSignal(text)) correctedType = 'expense';
+    else correctedType = 'excluded';
     repaired++;
     const category = correctedType === 'transfer'
       ? 'Transfer'
-      : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
-        ? (categoryFromText(text) || 'Other')
-        : tx.category;
+      : correctedType === 'excluded' && (!tx.category || tx.category === 'Income')
+        ? 'Other'
+        : correctedType === 'expense' && (!tx.category || tx.category === 'Income')
+          ? (categoryFromText(text) || 'Other')
+          : tx.category;
     return {
       ...tx,
       type: correctedType,
@@ -1246,7 +1274,13 @@ async function processStatementFile(file) {
         id: uid('draft'), date: raw.date, merchant: raw.merchant || cleanMerchant(raw.description),
         description: raw.description || raw.merchant || 'Imported transaction', amount: detectedAmount,
         type: detectedType,
-        category: raw.category || (detectedType === 'income' ? 'Income' : detectedType === 'transfer' ? 'Transfer' : autoCategory(`${raw.merchant || ''} ${raw.description || ''}`, detectedAmount)),
+        category: raw.category || (detectedType === 'income'
+          ? 'Income'
+          : detectedType === 'transfer'
+            ? 'Transfer'
+            : detectedType === 'excluded'
+              ? 'Other'
+              : autoCategory(`${raw.merchant || ''} ${raw.description || ''}`, detectedAmount)),
         owner, account, notes: '', source: extension, selected: true
       };
       tx = applyRules(tx);
