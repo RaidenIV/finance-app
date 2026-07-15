@@ -383,6 +383,118 @@ function previousMonth(key) {
 function daysBetween(a, b) { return Math.abs((new Date(a) - new Date(b)) / 86400000); }
 function memberName(id) { return state.members.find(m => m.id === id)?.name || 'Unassigned'; }
 function accountName(id) { return state.accounts.find(a => a.id === id)?.name || 'Unassigned'; }
+function accountDisplayName(id) {
+  if (importDraft?.account === id && importDraft.accountName) return importDraft.accountName;
+  return accountName(id);
+}
+function normalizeAccountKey(value = '') {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function titleCaseWords(value = '') {
+  return String(value).toLowerCase().replace(/\b[a-z0-9]/g, ch => ch.toUpperCase()).replace(/\s+/g, ' ').trim();
+}
+function statementFileStem(fileName = '') {
+  return String(fileName).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function detectInstitution(text = '') {
+  const value = String(text || '');
+  const institutions = ['Chase', 'Capital One', 'American Express', 'Amex', 'Discover', 'Citi', 'Citibank', 'Bank of America', 'Wells Fargo', 'US Bank', 'U.S. Bank', 'PNC', 'Fifth Third', 'Huntington', 'Navy Federal', 'SoFi', 'Venmo', 'Cash App', 'PayPal'];
+  return institutions.find(name => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?=[^a-z0-9]|\\d|$)`, 'i').test(value);
+  }) || '';
+}
+function detectAccountLast4(text = '') {
+  const value = String(text || '');
+  const patterns = [
+    /(?:account|acct|card)(?:\s*(?:number|no\.?|#))?\s*(?:ending\s*(?:in)?|x{2,}|\*{2,}|\.{2,})?\s*(\d{4})\b/i,
+    /(?:ending\s*(?:in)?|last\s*4)\s*(\d{4})\b/i,
+    /(?:chase|account|acct|card)\s*(\d{4})\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match) return match[1];
+  }
+  return '';
+}
+function detectAccountTypeFromText(text = '') {
+  const value = String(text || '').toLowerCase();
+  if (/credit card|cardmember|minimum payment|available credit|credit limit|statement balance|payment due/.test(value)) return 'credit';
+  if (/savings|save\b|sav\b/.test(value)) return 'savings';
+  if (/checking|chk\b|debit card|ach_credit|ach_debit|acct_xfer|account transfer|posting date/.test(value)) return 'checking';
+  return 'checking';
+}
+function cleanDetectedAccountName(name = '') {
+  return String(name || '')
+    .replace(/\bactivity\b.*$/i, '')
+    .replace(/\bstatement\b.*$/i, '')
+    .replace(/\btransactions?\b.*$/i, '')
+    .replace(/\b\d{8}\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function extractStatementAccountMetadata({ fileName = '', text = '', rows = [], headers = [] } = {}) {
+  const headerText = headers.join(' ');
+  const rowText = rows.slice(0, 12).map(row => row.join(' ')).join(' ');
+  const combined = `${fileName} ${headerText} ${text || rowText}`.replace(/\s+/g, ' ').trim();
+  const institution = detectInstitution(combined);
+  const last4 = detectAccountLast4(combined);
+  const accountType = detectAccountTypeFromText(combined);
+  const explicitNamePatterns = [
+    /account\s+name\s*[:\-]\s*([^\n\r|,]+)/i,
+    /account\s+summary\s+for\s+([^\n\r|,]+)/i,
+    /statement\s+for\s+([^\n\r|,]+)/i
+  ];
+  let name = '';
+  for (const pattern of explicitNamePatterns) {
+    const match = String(text || '').match(pattern);
+    if (match) { name = cleanDetectedAccountName(match[1]); break; }
+  }
+  if (!name) {
+    const stem = cleanDetectedAccountName(statementFileStem(fileName).replace(/([A-Za-z])(?=\d{4}\b)/g, '$1 '));
+    if (institution && last4) name = `${institution} ${last4}`;
+    else if (stem) name = titleCaseWords(stem);
+  }
+  if (!name) name = `${institution || 'Imported'} ${accountType === 'credit' ? 'Credit Card' : 'Account'}${last4 ? ` ${last4}` : ''}`.trim();
+  const importKey = normalizeAccountKey([institution, accountType, last4 || name].filter(Boolean).join('-'));
+  return { institution, last4, accountType, name, importKey, source: last4 || institution ? 'statement' : 'file name' };
+}
+function findExistingAccountForMetadata(metadata = {}) {
+  const importKey = normalizeAccountKey(metadata.importKey || '');
+  const normalizedName = normalizeAccountKey(metadata.name || '');
+  return state.accounts.find(account => {
+    const accountKey = normalizeAccountKey(account.importKey || '');
+    const accountNameKey = normalizeAccountKey(account.name || '');
+    const sameImportKey = importKey && accountKey && accountKey === importKey;
+    const sameLast4 = metadata.last4 && account.last4 === metadata.last4 && (!metadata.institution || !account.institution || normalizeAccountKey(metadata.institution) === normalizeAccountKey(account.institution));
+    const sameName = normalizedName && accountNameKey === normalizedName;
+    return sameImportKey || sameLast4 || sameName;
+  });
+}
+function resolveStatementAccount(file, parsedRows, fallbackAccount = {}) {
+  const metadata = parsedRows?.metadata || extractStatementAccountMetadata({ fileName: file?.name || '' });
+  const existing = findExistingAccountForMetadata(metadata);
+  if (existing) {
+    return { accountId: existing.id, accountRecord: existing, accountName: existing.name, accountIsNew: false, metadata, detectionLabel: `Matched ${existing.name}` };
+  }
+  const fallbackHasOnlyDefault = fallbackAccount && /^account-(joint|credit)$/.test(String(fallbackAccount.id || ''));
+  const hasStatementIdentity = !!(metadata.last4 || metadata.institution || metadata.source === 'statement');
+  if (!hasStatementIdentity && fallbackAccount?.id && !fallbackHasOnlyDefault) {
+    return { accountId: fallbackAccount.id, accountRecord: fallbackAccount, accountName: fallbackAccount.name, accountIsNew: false, metadata, detectionLabel: `Fallback: ${fallbackAccount.name}` };
+  }
+  let baseId = `account-${normalizeAccountKey(metadata.importKey || metadata.name || uid('imported-account'))}`;
+  if (state.accounts.some(account => account.id === baseId)) baseId = uid('account');
+  const accountRecord = {
+    id: baseId,
+    name: metadata.name || 'Imported Account',
+    type: metadata.accountType || fallbackAccount.type || 'checking',
+    owner: fallbackAccount.owner || 'shared',
+    institution: metadata.institution || fallbackAccount.institution || '',
+    last4: metadata.last4 || '',
+    importKey: metadata.importKey || normalizeAccountKey(metadata.name || baseId)
+  };
+  return { accountId: accountRecord.id, accountRecord, accountName: accountRecord.name, accountIsNew: true, metadata, detectionLabel: `Detected ${accountRecord.name}` };
+}
 function categoryColor(category) { return CATEGORY_COLORS[category] || CATEGORY_COLORS.Other; }
 
 function normalizeAmountForType(amount, type) {
@@ -1074,7 +1186,7 @@ function renderTransactions() {
   const rows = filteredTransactions(filters);
   const visible = visibleTransactionPage(rows);
   renderTransactionFilterStatus(filters, rows, monthRows);
-  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="8">${emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.')}</td></tr>`;
+  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="9">${emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.')}</td></tr>`;
   $('#mobileTransactionList').innerHTML = visible.length ? visible.map(mobileTransactionCard).join('') : emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.');
   bindTransactionRowEvents();
   renderPagination(rows.length);
@@ -1092,11 +1204,12 @@ function renderTransactions() {
 function transactionTableRow(tx) {
   const type = transactionType(tx);
   const bankType = transactionBankTypeLabel(tx);
-  const typeMeta = `${transactionTypeLabel(type)}${bankType ? ` · Statement type: ${bankType}` : ''}`;
-  return `<tr data-id="${tx.id}">
+  const bankMeta = bankType ? `Statement type: ${bankType}` : '';
+  return `<tr data-id="${tx.id}" class="transaction-row ${type}">
     <td class="checkbox-cell"><input type="checkbox" class="transaction-select" ${selectedTransactionIds.has(tx.id) ? 'checked' : ''} aria-label="Select transaction" /></td>
     <td>${formatDate(tx.date)}</td>
-    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml(tx.description || '')}</span><span>${escapeHtml(typeMeta)}</span></div></td>
+    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml(tx.description || '')}</span>${bankMeta ? `<span>${escapeHtml(bankMeta)}</span>` : ''}</div></td>
+    <td class="type-cell"><span class="type-pill ${type}">${escapeHtml(transactionTypeLabel(type))}</span></td>
     <td><span class="category-pill">${escapeHtml(tx.category || 'Other')}</span></td>
     <td><span class="owner-pill">${escapeHtml(memberName(tx.owner))}</span></td>
     <td>${escapeHtml(accountName(tx.account))}</td>
@@ -1108,10 +1221,10 @@ function transactionTableRow(tx) {
 function mobileTransactionCard(tx) {
   const type = transactionType(tx);
   const bankType = transactionBankTypeLabel(tx);
-  return `<div class="mobile-transaction-card" data-id="${tx.id}">
+  return `<div class="mobile-transaction-card ${type}" data-id="${tx.id}">
     <input type="checkbox" class="transaction-select" ${selectedTransactionIds.has(tx.id) ? 'checked' : ''} aria-label="Select transaction" />
-    <div class="mobile-transaction-main"><div class="mobile-transaction-title">${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</div><div class="mobile-transaction-meta"><span>${formatDate(tx.date)}</span><span>·</span><span>${escapeHtml(transactionTypeLabel(type))}</span>${bankType ? `<span>·</span><span>${escapeHtml(bankType)}</span>` : ''}<span>·</span><span>${escapeHtml(tx.category || 'Other')}</span><span>·</span><span>${escapeHtml(memberName(tx.owner))}</span></div></div>
-    <div class="mobile-transaction-side"><span class="amount-value ${type}">${type === 'income' ? '+' : type === 'expense' ? '−' : ''}${money(Math.abs(Number(tx.amount)))}</span><button class="row-action edit-transaction" aria-label="Edit transaction"><svg viewBox="0 0 24 24"><path d="m4 16-.8 4 4-.8L18 8.4 15.6 6 4 16Z"/><path d="m13.8 7.8 2.4 2.4"/></svg></button></div>
+    <div class="mobile-transaction-main"><div class="mobile-transaction-title">${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</div><div class="mobile-transaction-meta"><span>${formatDate(tx.date)}</span>${bankType ? `<span>·</span><span>${escapeHtml(bankType)}</span>` : ''}<span>·</span><span>${escapeHtml(tx.category || 'Other')}</span><span>·</span><span>${escapeHtml(memberName(tx.owner))}</span></div></div>
+    <div class="mobile-transaction-side"><span class="type-pill ${type}">${escapeHtml(transactionTypeLabel(type))}</span><span class="amount-value ${type}">${type === 'income' ? '+' : type === 'expense' ? '−' : ''}${money(Math.abs(Number(tx.amount)))}</span><button class="row-action edit-transaction" aria-label="Edit transaction"><svg viewBox="0 0 24 24"><path d="m4 16-.8 4 4-.8L18 8.4 15.6 6 4 16Z"/><path d="m13.8 7.8 2.4 2.4"/></svg></button></div>
   </div>`;
 }
 
@@ -1312,18 +1425,20 @@ function saveAccountFromForm(event) {
 function applyDisplaySettings() { document.body.classList.toggle('compact-rows', !!state.settings.compactRows); }
 
 async function processStatementFile(file) {
-  if (!state.accounts.length) { toast('Add an account first', 'Create a statement account in Settings before importing.'); return; }
   const extension = file.name.split('.').pop().toLowerCase();
   if (!['csv','pdf'].includes(extension)) { toast('Unsupported file type', 'Choose a CSV or PDF statement.'); return; }
   if (file.size > 15 * 1024 * 1024) toast('Large file', 'Processing may take longer than usual in your browser.');
   showImportStatus(true, 'Reading statement…', `Processing ${file.name}`);
   try {
-    const account = $('#importAccount').value;
-    const accountRecord = state.accounts.find(item => item.id === account) || {};
+    const fallbackAccountId = $('#importAccount').value;
+    const fallbackAccountRecord = state.accounts.find(item => item.id === fallbackAccountId) || {};
     let parsed;
-    if (extension === 'csv') parsed = await parseCsvFile(file, accountRecord);
-    else parsed = await parsePdfFile(file, accountRecord);
+    if (extension === 'csv') parsed = await parseCsvFile(file, fallbackAccountRecord);
+    else parsed = await parsePdfFile(file, fallbackAccountRecord);
     if (!parsed.length) throw new Error(extension === 'pdf' ? 'No transactions were detected. This may be a scanned PDF.' : 'No transaction rows were detected in the CSV.');
+    const resolvedAccount = resolveStatementAccount(file, parsed, fallbackAccountRecord);
+    const account = resolvedAccount.accountId;
+    const accountRecord = resolvedAccount.accountRecord;
     const owner = $('#importOwner').value || accountRecord.owner || 'shared';
     const statementConvention = inferStatementConvention(parsed, accountRecord);
     const normalized = parsed.map(raw => {
@@ -1345,13 +1460,27 @@ async function processStatementFile(file) {
         selected: true
       };
       tx = applyRules(tx);
+      tx.account = account;
       tx.fingerprint = fingerprint(tx);
       tx.duplicate = isDuplicate(tx);
       if (tx.duplicate) tx.selected = false;
       return tx;
     }).filter(tx => tx.date && Number.isFinite(tx.amount) && tx.amount !== 0);
     markTransferSuggestions(normalized);
-    importDraft = { fileName: file.name, fileType: extension.toUpperCase(), transactions: normalized, account, owner, importedAt: new Date().toISOString() };
+    importDraft = {
+      fileName: file.name,
+      fileType: extension.toUpperCase(),
+      transactions: normalized,
+      account,
+      accountRecord,
+      accountName: resolvedAccount.accountName,
+      accountOriginalName: resolvedAccount.accountName,
+      accountIsNew: resolvedAccount.accountIsNew,
+      accountMetadata: resolvedAccount.metadata,
+      accountDetectionLabel: resolvedAccount.detectionLabel,
+      owner,
+      importedAt: new Date().toISOString()
+    };
     renderImportReview();
     openModal('#importReviewModal');
   } catch (error) {
@@ -1384,7 +1513,7 @@ async function parseCsvFile(file, account = {}) {
   const debitIndex = findHeader(headers, ['debit','withdrawal','withdrawals','charge']);
   const creditIndex = findHeader(headers, ['credit','deposit','deposits','payment']);
   if (dateIndex < 0 || descIndex < 0 || (amountIndex < 0 && debitIndex < 0 && creditIndex < 0)) throw new Error('The CSV needs date, description, and amount/debit/credit columns.');
-  return dataRows.map(row => {
+  const parsedRows = dataRows.map(row => {
     const date = parseDateValue(row[dateIndex]);
     const description = String(row[descIndex] || '').trim();
     const bankDirection = bankDirectionIndex >= 0 ? String(row[bankDirectionIndex] || '').trim() : '';
@@ -1414,6 +1543,8 @@ async function parseCsvFile(file, account = {}) {
       sourceFormat: 'csv'
     };
   }).filter(row => row.date && row.description && Number.isFinite(row.amount) && row.amount !== 0);
+  parsedRows.metadata = extractStatementAccountMetadata({ fileName: file.name, text, rows, headers });
+  return parsedRows;
 }
 
 function parseCsv(text) {
@@ -1455,7 +1586,9 @@ async function parsePdfFile(file, account = {}) {
     const lines = groupPdfItemsIntoLines(content.items).map(line => ({ ...line, pageNumber }));
     allLines.push(...lines);
   }
-  return parseTransactionLines(allLines, account);
+  const parsedRows = parseTransactionLines(allLines, account);
+  parsedRows.metadata = extractStatementAccountMetadata({ fileName: file.name, text: allLines.map(line => line.text).join('\n') });
+  return parsedRows;
 }
 
 function groupPdfItemsIntoLines(items) {
@@ -1742,7 +1875,21 @@ function renderImportReview() {
   const income = selected.filter(tx => tx.type === 'income').reduce((s,tx) => s + Math.abs(tx.amount),0);
   const expense = selected.filter(tx => tx.type === 'expense').reduce((s,tx) => s + Math.abs(tx.amount),0);
   const duplicates = txs.filter(tx => tx.duplicate).length;
-  $('#importReviewSubtitle').textContent = `${importDraft.fileName} · ${accountName(importDraft.account)}`;
+  const metadata = importDraft.accountMetadata || {};
+  $('#importReviewSubtitle').textContent = `${importDraft.fileName} · ${importDraft.accountIsNew ? 'New detected account' : 'Existing account'}`;
+  $('#importAccountReview').innerHTML = `<div class="review-account-card">
+    <div class="review-account-copy">
+      <span class="review-account-label">Account assignment</span>
+      <strong>${escapeHtml(importDraft.accountDetectionLabel || accountDisplayName(importDraft.account))}</strong>
+      <small>${metadata.source === 'statement' ? 'Detected from statement data' : 'Detected from file name or fallback'}${metadata.last4 ? ` · ending ${escapeHtml(metadata.last4)}` : ''}${metadata.institution ? ` · ${escapeHtml(metadata.institution)}` : ''}</small>
+    </div>
+    <label class="field-group review-account-name"><span>Account name</span><input type="text" id="importAccountNameInput" value="${escapeHtml(importDraft.accountName || accountDisplayName(importDraft.account))}" maxlength="60" /></label>
+    <span class="status-badge ${importDraft.accountIsNew ? 'new-account' : ''}">${importDraft.accountIsNew ? 'NEW ACCOUNT' : 'MATCHED'}</span>
+  </div>`;
+  $('#importAccountNameInput').addEventListener('input', event => {
+    importDraft.accountName = event.target.value.trim() || importDraft.accountOriginalName || 'Imported Account';
+    $$('#importReviewBody .import-account-pill').forEach(pill => { pill.textContent = importDraft.accountName; });
+  });
   $('#importReviewSummary').innerHTML = [
     ['Detected', txs.length], ['Selected', selected.length], ['Income', money(income)], ['Spending', money(expense)]
   ].map(([label,value]) => `<div class="review-stat"><span>${label}</span><strong>${value}</strong></div>`).join('');
@@ -1751,6 +1898,7 @@ function renderImportReview() {
     <td><input type="checkbox" class="import-select" ${tx.selected ? 'checked' : ''} /></td>
     <td><input type="date" class="import-date" value="${tx.date}" /></td>
     <td class="review-description"><input type="text" class="import-description" value="${escapeHtml(tx.merchant || tx.description)}" />${transactionBankTypeLabel(tx) ? `<div class="transfer-suggestion">Statement type: ${escapeHtml(transactionBankTypeLabel(tx))}</div>` : ''}${tx.duplicate ? '<div class="transfer-suggestion">Possible duplicate</div>' : tx.transferSuggestion ? '<div class="transfer-suggestion">Possible internal transfer</div>' : ''}</td>
+    <td><span class="import-account-pill">${escapeHtml(accountDisplayName(tx.account))}</span></td>
     <td><select class="import-category">${DEFAULT_CATEGORIES.map(c => `<option value="${c}" ${c === tx.category ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
     <td><select class="import-owner">${state.members.map(m => `<option value="${m.id}" ${m.id === tx.owner ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}</select></td>
     <td><select class="import-type"><option value="expense" ${tx.type === 'expense' ? 'selected' : ''}>Expense</option><option value="income" ${tx.type === 'income' ? 'selected' : ''}>Income</option><option value="transfer" ${tx.type === 'transfer' ? 'selected' : ''}>Transfer</option><option value="excluded" ${tx.type === 'excluded' ? 'selected' : ''}>Excluded</option></select></td>
@@ -1776,6 +1924,13 @@ function confirmImport() {
   const selected = importDraft.transactions.filter(tx => tx.selected && !isDuplicate(tx));
   if (!selected.length) { toast('Nothing selected', 'Select at least one new transaction to import.'); return; }
   const now = new Date().toISOString();
+  const accountNameForImport = (importDraft.accountName || importDraft.accountOriginalName || 'Imported Account').trim();
+  const existingAccountIndex = state.accounts.findIndex(account => account.id === importDraft.account);
+  if (existingAccountIndex >= 0) {
+    state.accounts[existingAccountIndex] = { ...state.accounts[existingAccountIndex], name: accountNameForImport, updatedAt: now };
+  } else {
+    state.accounts.push({ ...importDraft.accountRecord, id: importDraft.account, name: accountNameForImport, owner: importDraft.accountRecord?.owner || importDraft.owner || 'shared', createdAt: now, updatedAt: now });
+  }
   const final = selected.map(tx => ({
     id: uid('tx'), date: tx.date, merchant: tx.merchant, description: tx.description,
     amount: normalizeAmountForType(tx.amount, tx.type), type: tx.type,

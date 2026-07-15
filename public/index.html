@@ -287,6 +287,7 @@
                   <th class="checkbox-cell"><input type="checkbox" id="selectAllTransactions" aria-label="Select all transactions" /></th>
                   <th>Date</th>
                   <th>Merchant / Description</th>
+                  <th>Type</th>
                   <th>Category</th>
                   <th>Owner</th>
                   <th>Account</th>
@@ -321,8 +322,9 @@
 
             <div class="import-context-grid">
               <label class="field-group">
-                <span>Account</span>
+                <span>Fallback account</span>
                 <select id="importAccount"></select>
+                <small>Used only when the statement does not include account details.</small>
               </label>
               <label class="field-group">
                 <span>Transaction owner</span>
@@ -595,6 +597,7 @@
       </div>
       <button class="icon-button modal-close" data-close-modal aria-label="Close modal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
+    <div class="import-account-review" id="importAccountReview"></div>
     <div class="import-review-summary" id="importReviewSummary"></div>
     <div class="review-toolbar">
       <div class="review-message" id="reviewMessage"></div>
@@ -605,7 +608,7 @@
     </div>
     <div class="review-table-wrap">
       <table class="review-table">
-        <thead><tr><th>Import</th><th>Date</th><th>Description</th><th>Category</th><th>Owner</th><th>Type</th><th class="amount-cell">Amount</th></tr></thead>
+        <thead><tr><th>Import</th><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th>Owner</th><th>Type</th><th class="amount-cell">Amount</th></tr></thead>
         <tbody id="importReviewBody"></tbody>
       </table>
     </div>
