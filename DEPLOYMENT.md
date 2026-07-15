@@ -1,99 +1,215 @@
-# Deploy HomeLedger with GitHub and Railway
+# Deploy HomeLedger with GitHub, Railway, and MongoDB
 
-HomeLedger is configured so the source code lives in GitHub and Railway automatically builds and serves the app.
+This version is designed for a GitHub repository connected to a Railway application service and a Railway MongoDB service.
 
-## 1. Create the GitHub repository
+## Architecture
 
-1. Sign in to GitHub.
-2. Select **New repository**.
-3. Name the repository `homeledger` or another name you prefer.
-4. Choose **Private** if you do not want the source code publicly visible.
-5. Do not add a README, `.gitignore`, or license when creating the repository because those files are already included.
-6. Create the repository.
+```text
+Desktop browser ─┐
+Mobile browser ──┼── Railway HomeLedger service ── Railway MongoDB
+Wife's browser ──┘
+```
 
-## 2. Upload the project files
+The CSV/PDF file is parsed in the browser. After the review step, the approved transaction data is sent to the Railway API and saved in MongoDB.
 
-Unzip the HomeLedger download on your computer. Upload the **contents inside the `household-finance-app` folder** to the root of the GitHub repository.
+## Part 1 — Create the GitHub repository
 
-The repository root should look like this:
+1. Download and extract the HomeLedger MongoDB package.
+2. In GitHub, create a new repository, for example:
+
+```text
+homeledger
+```
+
+3. Set the repository to **Private**.
+4. Upload everything inside the extracted project folder to the root of the repository.
+
+The GitHub repository root should look like this:
 
 ```text
 homeledger/
+├── public/
+├── .env.example
 ├── .gitignore
 ├── DEPLOYMENT.md
-├── README.md
-├── app.js
-├── index.html
-├── package-lock.json
 ├── package.json
 ├── railway.json
-├── sample-bank-statement.csv
-├── server.js
-└── styles.css
+├── README.md
+└── server.js
 ```
 
-Do not upload the outer folder as an extra nested folder. `package.json`, `server.js`, and `index.html` should be visible at the repository root.
+Do not upload a `.env` file.
 
-Commit the files directly to the `main` branch.
+## Part 2 — Create the Railway application
 
-## 3. Create the Railway project
-
-1. Sign in to Railway.
+1. Open Railway.
 2. Select **New Project**.
-3. Choose **Deploy from GitHub repo**.
-4. Authorize Railway to access GitHub if prompted.
-5. Select the HomeLedger repository.
-6. Railway should detect Node.js from `package.json`, build the service, and run `npm start`.
+3. Select **Deploy from GitHub repo**.
+4. Choose the HomeLedger repository.
+5. Railway will create the application service. The first deployment may fail until the database and required variables are added; that is expected.
 
-No environment variables or database are required for this version.
+## Part 3 — Add MongoDB
 
-## 4. Generate the public Railway URL
+1. In the same Railway project, click **New**.
+2. Choose **Database**.
+3. Choose **MongoDB**.
+4. Wait for the MongoDB service to initialize.
 
-After the deployment succeeds:
+You should now see two services in the same Railway project:
 
-1. Open the HomeLedger service in Railway.
-2. Open **Settings**.
-3. Find **Networking → Public Networking**.
-4. Select **Generate Domain**.
-5. Open the generated `.railway.app` address.
+```text
+HomeLedger application
+MongoDB
+```
 
-## 5. Automatic deployments
+## Part 4 — Connect the application to MongoDB
 
-Railway will redeploy the connected service when new commits are pushed to the configured GitHub branch. To publish a future app update:
+1. Open the **HomeLedger application service**, not the MongoDB service.
+2. Open **Variables**.
+3. Select **New Variable** or use the Railway variable reference picker.
+4. Create:
 
-1. Update the files in GitHub.
-2. Commit the change to `main`.
-3. Wait for the Railway deployment to finish.
-4. Refresh the Railway URL.
+```text
+MONGO_URL
+```
 
-## 6. Local testing
+5. Set its value by referencing the MongoDB service's `MONGO_URL` variable.
 
-Install Node.js 20 or newer, open a terminal in the project folder, and run:
+Using Railway's reference picker is preferred. The resolved reference generally resembles:
+
+```text
+${{MongoDB.MONGO_URL}}
+```
+
+The exact service name in the reference will match the name of your MongoDB service. Do not type a guessed reference when the picker is available.
+
+## Part 5 — Add the session secret
+
+In the HomeLedger application service, add:
+
+```text
+SESSION_SECRET
+```
+
+Use a unique random value of at least 32 characters. You can generate one locally with:
+
+```bash
+openssl rand -hex 32
+```
+
+Also add:
+
+```text
+NODE_ENV=production
+```
+
+Your application variables should include:
+
+```text
+MONGO_URL=<reference to the MongoDB service MONGO_URL>
+SESSION_SECRET=<long random private value>
+NODE_ENV=production
+```
+
+Do not commit these values to GitHub.
+
+## Part 6 — Redeploy
+
+1. Open the HomeLedger application service.
+2. Open **Deployments**.
+3. Redeploy the latest commit if Railway did not redeploy automatically after the variable changes.
+4. Wait for the deployment to show **Success**.
+
+Railway will run:
 
 ```bash
 npm start
 ```
 
-Open:
+The included `/health` endpoint verifies that the application can reach MongoDB. Railway's health check should return:
 
-```text
-http://localhost:3000
+```json
+{
+  "status": "ok",
+  "database": "connected"
+}
 ```
 
-The health endpoint is available at:
+## Part 7 — Generate the public domain
+
+1. Open the HomeLedger application service.
+2. Open **Settings**.
+3. Open **Networking**.
+4. Under **Public Networking**, select **Generate Domain**.
+
+Railway will provide a URL similar to:
 
 ```text
-http://localhost:3000/health
+https://homeledger-production.up.railway.app
 ```
 
-## Current data-storage behavior
+Open that URL and create the first account.
 
-This deployment hosts the app interface, but the finance data remains local to each browser using `localStorage`.
+## Part 8 — Create the shared household
 
-- Statements are processed in the browser.
-- Uploaded statements are not stored on Railway by this version.
-- Data entered on desktop does not automatically appear on mobile.
-- Data entered in your browser does not appear for your wife on another device.
-- Use **Settings → Export JSON backup** and **Import JSON backup** to move data between browsers.
+For the first user:
 
-True shared household data requires a later backend version with authentication and a database.
+1. Select **Create account**.
+2. Leave **Create household** selected.
+3. Enter a name, email, password, and household name.
+4. Sign in.
+5. Open **Settings**.
+6. Copy the **Household Invite Code**.
+
+For your wife:
+
+1. Open the same Railway URL on her device.
+2. Select **Create account**.
+3. Select **Join with code**.
+4. Enter her own name, email, and password.
+5. Enter the household invite code.
+
+Both accounts now load and update the same household data in MongoDB.
+
+## Part 9 — Future updates
+
+After GitHub and Railway are connected:
+
+```text
+Edit files
+→ Commit and push to GitHub
+→ Railway automatically builds and redeploys
+→ The same public URL serves the new version
+```
+
+MongoDB data remains separate from the application deployment, so normal code redeployments do not erase household data.
+
+## Troubleshooting
+
+### Deployment says `MONGO_URL or MONGODB_URI is required`
+
+The application service does not have the MongoDB connection reference. Add `MONGO_URL` to the application service using Railway's reference-variable picker.
+
+### Deployment says `SESSION_SECRET must be configured`
+
+Add a random `SESSION_SECRET` with at least 32 characters to the application service variables.
+
+### Health check is failing
+
+Open the application deployment logs and verify:
+
+- The MongoDB service is running.
+- `MONGO_URL` references the correct MongoDB service.
+- The application and database are in the same Railway project.
+
+### Login works on one device but not another
+
+Each browser has its own secure session cookie. Sign in separately on each device using the same user account, or create the second household login with the invite code.
+
+### Changes were reloaded after editing
+
+HomeLedger uses a household version number to prevent an older browser from silently overwriting newer changes. If another device saves first, the stale browser reloads the newest server copy and displays a notice.
+
+### PDF imported no transactions
+
+The PDF may be scanned or image-only. Export a CSV from the bank when possible. This version supports text-based PDFs but does not include OCR.

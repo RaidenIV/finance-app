@@ -1,78 +1,110 @@
-# HomeLedger
+# HomeLedger — MongoDB Edition
 
-HomeLedger is a responsive, local-first household finance dashboard built with HTML, CSS, and JavaScript. It imports CSV and text-based PDF bank statements, lets users review and categorize transactions, and generates household income and spending analytics.
+HomeLedger is a responsive household finance application built with HTML, CSS, vanilla JavaScript, Node.js, Express, and MongoDB. It imports CSV and text-based PDF bank statements, lets users review and categorize transactions, and synchronizes one shared household ledger across desktop and mobile devices.
 
-## Run locally
+## What changed in version 2
 
-HomeLedger includes a dependency-free Node.js static server for local development and Railway deployment.
+- Financial data is stored in MongoDB instead of browser `localStorage`.
+- Each person has a separate email/password login.
+- The first user creates a household and receives an invite code.
+- A spouse or household member can create a separate login and join with that code.
+- Approved transactions, accounts, rules, imports, household settings, and display settings synchronize through the Railway API.
+- Session cookies are HTTP-only and sessions are stored in MongoDB.
+- Passwords are hashed with bcrypt.
+- Household writes use version checks so a stale browser cannot silently overwrite newer data from another device.
+- Uploaded statement files are parsed in the browser. The original CSV/PDF is not saved to the server; only the approved transaction records are synchronized.
 
-Requirements:
+## Technology
 
-- Node.js 20 or newer
+- Frontend: HTML, CSS, vanilla JavaScript
+- Backend: Node.js and Express
+- Database: MongoDB with Mongoose
+- Authentication: `express-session`, `connect-mongo`, and `bcryptjs`
+- Hosting: GitHub source repository + Railway application service + Railway MongoDB service
 
-Run:
+## Project structure
 
-```bash
-npm start
+```text
+homeledger-mongodb/
+├── public/
+│   ├── app.js
+│   ├── index.html
+│   ├── sample-bank-statement.csv
+│   └── styles.css
+├── .env.example
+├── .gitignore
+├── DEPLOYMENT.md
+├── package.json
+├── railway.json
+├── README.md
+└── server.js
 ```
 
-Then open:
+## Local development
+
+You need Node.js 20+ and a MongoDB connection string.
+
+1. Copy `.env.example` to `.env`.
+2. Set `MONGO_URL` and a long random `SESSION_SECRET`.
+3. Install dependencies:
+
+```bash
+npm install
+```
+
+4. Start HomeLedger:
+
+```bash
+npm run dev
+```
+
+5. Open:
 
 ```text
 http://localhost:3000
 ```
 
-The deployment health endpoint is:
+The health endpoint is:
 
 ```text
 http://localhost:3000/health
 ```
 
-## GitHub + Railway deployment
+## First-use workflow
 
-The repository is ready to deploy directly from GitHub to Railway.
+1. Choose **Create account**.
+2. Enter your name, email, password, and household name.
+3. Open **Settings → Shared household access**.
+4. Copy the household invite code.
+5. Your wife chooses **Create account → Join with code** and enters that code.
+6. Both logins will use the same MongoDB-backed household ledger.
 
-Included deployment files:
+## Statement import behavior
 
-- `package.json` — defines the Node.js app and `npm start` command
-- `server.js` — serves the HTML, CSS, JavaScript, and sample CSV files
-- `railway.json` — configures Railway's builder, start command, healthcheck, and restart policy
-- `.gitignore` — prevents local and secret files from being committed
-- `DEPLOYMENT.md` — step-by-step GitHub and Railway setup instructions
+- CSV is the preferred format because it is structured and more reliable.
+- Text-based PDFs are supported through PDF.js.
+- Scanned/image-only PDFs require OCR and are not supported in this version.
+- Files are parsed in the browser.
+- The review screen lets you correct dates, merchants, categories, owners, types, and amounts.
+- Only selected and approved transaction records are sent to the server.
+- Possible duplicates and internal transfers are flagged before import.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete deployment process.
+## Data model
 
-## Import support
+MongoDB stores:
 
-- **CSV:** Recommended. The importer detects common Date, Description/Merchant, Amount, Debit, Credit, Withdrawal, and Deposit columns.
-- **PDF:** Supports text-based PDFs with recognizable transaction lines. Scanned/image-only PDFs require OCR, which is not included in this static version.
+- `users` — account identity, password hash, household membership, and role
+- `households` — household name and invite code
+- `householdstates` — the synchronized household ledger and version number
+- `sessions` — authenticated browser sessions
 
-## Privacy
+## Important production notes
 
-- Files are processed in the browser.
-- Transactions, rules, accounts, and settings are stored in `localStorage` on the current device.
-- No financial data is uploaded to Railway by this version.
-- Use **Settings → Export JSON backup** to move or back up data.
+- Keep the GitHub repository private because this is a personal financial application.
+- Never commit `.env`.
+- Use Railway's variable reference picker for the MongoDB connection string.
+- Set a unique `SESSION_SECRET` with at least 32 characters.
+- Keep Railway's generated HTTPS domain enabled; secure cookies depend on HTTPS in production.
+- Export periodic JSON backups from HomeLedger in addition to any Railway database backups.
 
-## Important limitation
-
-Hosting the app does not add multi-device synchronization. Browser local storage remains separate on desktop, mobile, and your wife's device. A shared household version requires authentication, a backend API, and a database.
-
-## Included features
-
-- Responsive desktop and mobile layout
-- Household dashboard
-- Income, spending, net cash flow, and savings-rate metrics
-- Six-month income-versus-spending chart
-- Spending-by-category donut chart
-- Top merchants and recent activity
-- CSV import with column detection
-- PDF text extraction with transaction heuristics
-- Import review and duplicate detection
-- Categorization rules
-- Transfer suggestions
-- Search and transaction filters
-- Manual transaction entry and editing
-- Account and household settings
-- JSON backup and restore
-- Sample CSV statement
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete GitHub and Railway setup.
