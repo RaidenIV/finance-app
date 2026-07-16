@@ -1585,3 +1585,66 @@ input:focus, select:focus, textarea:focus {
   .account-dashboard-row { grid-template-columns: 38px minmax(0, 1fr); }
   .account-row-values, .account-dashboard-row .row-action { grid-column: 2; text-align: left; }
 }
+
+/* Screenshot fixes: import spacing and budget summary overflow/state */
+.import-panel {
+  min-width: 0;
+}
+.import-context-grid {
+  align-items: start;
+}
+.drop-zone {
+  min-height: 250px;
+  padding: 30px 20px;
+}
+.drop-zone h3 {
+  margin-top: 0;
+}
+.budget-left-card.positive-state {
+  background: var(--income-soft);
+  color: var(--income);
+}
+.budget-left-card.negative-state {
+  background: var(--expense-soft);
+  color: var(--expense);
+}
+.budget-left-card.negative-state strong,
+.budget-left-card.negative-state span {
+  color: var(--expense);
+}
+.budget-summary-list {
+  gap: 14px;
+}
+.budget-summary-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: baseline;
+  gap: 14px;
+  width: 100%;
+}
+.budget-summary-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.budget-summary-list strong {
+  white-space: nowrap;
+  text-align: right;
+  line-height: 1.15;
+}
+@media (max-width: 920px) {
+  .drop-zone {
+    min-height: 225px;
+    padding: 28px 16px;
+  }
+}
+@media (max-width: 620px) {
+  .budget-summary-list > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .budget-summary-list strong {
+    text-align: left;
+  }
+}
