@@ -96,17 +96,46 @@
 
       <nav class="nav-list">
         <button class="nav-item active" data-view="dashboard">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5V20h-5v-6H9v6H4v-8.5Z"/></svg>
           <span>Dashboard</span>
         </button>
+        <button class="nav-item" data-view="accounts">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M5 7l7-4 7 4M6 10v7m4-7v7m4-7v7m4-7v7M4 20h16"/></svg>
+          <span>Accounts</span>
+          <span class="nav-count" id="accountCount">0</span>
+        </button>
         <button class="nav-item" data-view="transactions">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
           <span>Transactions</span>
           <span class="nav-count" id="transactionCount">0</span>
         </button>
+        <button class="nav-item" data-view="cashflow">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V5m0 14h15M9 16v-5m4 5V8m4 8v-9"/></svg>
+          <span>Cash Flow</span>
+        </button>
+        <button class="nav-item" data-view="reports">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V5m4 14V9m4 10V5m4 14v-7"/></svg>
+          <span>Reports</span>
+        </button>
+        <button class="nav-item" data-view="budget">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 6v12m4-12v12M4 11h16"/></svg>
+          <span>Budget</span>
+        </button>
+        <button class="nav-item" data-view="recurring">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7zM8 3v4m8-4v4M5 11h14"/></svg>
+          <span>Recurring</span>
+        </button>
+        <button class="nav-item" data-view="goals">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-4a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-3a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg>
+          <span>Goals</span>
+        </button>
+        <button class="nav-item" data-view="advice">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3m0 12v3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M3 12h3m12 0h3M4.9 19.1 7 17m10-10 2.1-2.1M9 14h6m-5 3h4m-5.5-7a3.5 3.5 0 1 1 7 0c0 1.5-.8 2.3-1.7 3.2-.4.4-.8.9-.8 1.8h-4c0-.9-.4-1.4-.8-1.8-.9-.9-1.7-1.7-1.7-3.2Z"/></svg>
+          <span>Advice</span>
+        </button>
         <button class="nav-item" data-view="import">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 20h16"/></svg>
-          <span>Import Statements</span>
+          <span>Import</span>
         </button>
         <button class="nav-item" data-view="rules">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v5H5zM5 15h14v5H5zM8 9v6m8-6v6"/></svg>
@@ -227,8 +256,63 @@
         </div>
       </section>
 
+
+      <section class="view" id="view-accounts" data-view-panel="accounts">
+        <div class="accounts-layout feature-layout">
+          <article class="panel panel-large account-overview-panel">
+            <div class="panel-header stacked-mobile">
+              <div>
+                <p class="panel-kicker">ACCOUNTS</p>
+                <h2>Account activity</h2>
+                <p class="muted-copy">Review account-level income, spending, and net flow for the selected month.</p>
+              </div>
+              <button class="button primary compact" id="accountsAddAccountBtn" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Add account
+              </button>
+            </div>
+            <div class="account-performance" id="accountPerformanceChart"></div>
+            <div class="account-dashboard-list" id="accountsDashboardList"></div>
+          </article>
+          <aside class="panel compact-panel summary-panel">
+            <div class="panel-header"><div><p class="panel-kicker">SUMMARY</p><h3>Account totals</h3></div></div>
+            <div id="accountsSummary"></div>
+          </aside>
+        </div>
+      </section>
       <section class="view" id="view-transactions" data-view-panel="transactions">
-        <div class="toolbar-card" aria-label="Transaction filters">
+        <div class="transactions-page-head">
+          <div class="transaction-view-select">
+            <select id="transactionQuickView" aria-label="Transaction quick view">
+              <option value="all">All transactions</option>
+              <option value="income">Income</option>
+              <option value="expense">Expenses</option>
+              <option value="transfer">Transfers</option>
+              <option value="excluded">Excluded</option>
+            </select>
+          </div>
+          <div class="transaction-toolbar-actions">
+            <button class="button secondary compact" id="transactionSearchToggle" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              Search
+            </button>
+            <button class="button secondary compact" id="transactionDateShortcut" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v4m10-4v4M4 8h16M5 5h14v16H5z"/></svg>
+              Date
+            </button>
+            <button class="button secondary compact" id="transactionFilterToggle" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+              Filters
+            </button>
+            <button class="button secondary compact" data-go-view="rules" type="button">Edit rules</button>
+            <button class="button primary compact" id="transactionAddBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Add transaction
+            </button>
+          </div>
+        </div>
+
+        <div class="toolbar-card transaction-filters collapsed" id="transactionFiltersCard" aria-label="Transaction filters">
           <label class="filter-field filter-field-search">
             <span class="filter-label">Search</span>
             <span class="search-field">
@@ -268,42 +352,115 @@
           <div class="filter-chips" id="activeTransactionFilters"></div>
         </div>
 
-        <article class="panel transaction-panel">
-          <div class="transaction-panel-head">
-            <div>
-              <p class="panel-kicker">LEDGER</p>
-              <h2 id="transactionResultTitle">All transactions</h2>
+        <div class="transactions-layout">
+          <article class="panel transaction-panel">
+            <div class="transaction-panel-head">
+              <div>
+                <p class="panel-kicker">TRANSACTIONS</p>
+                <h2 id="transactionResultTitle">All transactions</h2>
+              </div>
+              <div class="bulk-actions hidden" id="bulkActions">
+                <span id="selectedCount">0 selected</span>
+                <button class="text-button" id="bulkTransferBtn">Mark transfer</button>
+                <button class="text-button danger" id="bulkDeleteBtn">Delete</button>
+              </div>
             </div>
-            <div class="bulk-actions hidden" id="bulkActions">
-              <span id="selectedCount">0 selected</span>
-              <button class="text-button" id="bulkTransferBtn">Mark transfer</button>
-              <button class="text-button danger" id="bulkDeleteBtn">Delete</button>
+            <div class="table-wrap">
+              <table class="transaction-table">
+                <thead>
+                  <tr>
+                    <th class="checkbox-cell"><input type="checkbox" id="selectAllTransactions" aria-label="Select all transactions" /></th>
+                    <th>Date</th>
+                    <th>Merchant / Description</th>
+                    <th>Type</th>
+                    <th>Category</th>
+                    <th>Account</th>
+                    <th class="amount-cell">Amount</th>
+                    <th class="actions-cell"></th>
+                  </tr>
+                </thead>
+                <tbody id="transactionTableBody"></tbody>
+              </table>
             </div>
+            <div class="mobile-transaction-list" id="mobileTransactionList"></div>
+            <div class="table-footer">
+              <span id="transactionTableCount">0 transactions</span>
+              <div class="pagination" id="transactionPagination"></div>
+            </div>
+          </article>
+          <aside class="panel transaction-summary-panel">
+            <div class="panel-header"><div><p class="panel-kicker">SUMMARY</p><h2>Summary</h2></div></div>
+            <div id="transactionSummaryPanel"></div>
+          </aside>
+        </div>
+      </section>
+
+
+      <section class="view" id="view-cashflow" data-view-panel="cashflow">
+        <div class="reports-shell">
+          <article class="panel panel-large">
+            <div class="panel-header stacked-mobile">
+              <div><p class="panel-kicker">CASH FLOW</p><h2>Income, spending, and net flow</h2></div>
+              <div class="report-tabs"><button class="active" type="button">Monthly</button><button type="button">Quarterly</button></div>
+            </div>
+            <div class="chart-wrap tall-chart" id="cashFlowDetailChart"></div>
+          </article>
+          <aside class="panel compact-panel summary-panel"><div class="panel-header"><div><p class="panel-kicker">SUMMARY</p><h3>Cash flow summary</h3></div></div><div id="cashFlowSummary"></div></aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-reports" data-view-panel="reports">
+        <div class="report-tabs-row">
+          <strong>Reports</strong>
+          <button class="report-subtab active" data-report-mode="spending" type="button">Spending</button>
+          <button class="report-subtab" data-report-mode="cashflow" type="button">Cash Flow</button>
+          <button class="report-subtab" data-report-mode="income" type="button">Income</button>
+        </div>
+        <article class="panel report-main-panel">
+          <div class="panel-header stacked-mobile">
+            <div><p class="panel-kicker" id="reportKicker">SPENDING BY CATEGORY</p><h2 id="reportTitle">All time</h2></div>
+            <div class="report-actions"><button class="button secondary compact" type="button" id="reportByCategoryBtn">By category</button><button class="button secondary compact active" type="button">Totals</button><button class="button secondary compact" type="button">Change</button></div>
           </div>
-          <div class="table-wrap">
-            <table class="transaction-table">
-              <thead>
-                <tr>
-                  <th class="checkbox-cell"><input type="checkbox" id="selectAllTransactions" aria-label="Select all transactions" /></th>
-                  <th>Date</th>
-                  <th>Merchant / Description</th>
-                  <th>Type</th>
-                  <th>Category</th>
-                  <th>Owner</th>
-                  <th>Account</th>
-                  <th class="amount-cell">Amount</th>
-                  <th class="actions-cell"></th>
-                </tr>
-              </thead>
-              <tbody id="transactionTableBody"></tbody>
-            </table>
-          </div>
-          <div class="mobile-transaction-list" id="mobileTransactionList"></div>
-          <div class="table-footer">
-            <span id="transactionTableCount">0 transactions</span>
-            <div class="pagination" id="transactionPagination"></div>
-          </div>
+          <div class="report-chart-layout" id="reportChartLayout"></div>
         </article>
+        <div class="transactions-layout report-transactions-layout">
+          <article class="panel"><div class="panel-header"><div><p class="panel-kicker">TRANSACTIONS</p><h2>Report transactions</h2></div></div><div class="recent-list" id="reportTransactionsList"></div></article>
+          <aside class="panel transaction-summary-panel"><div class="panel-header"><div><p class="panel-kicker">SUMMARY</p><h2>Summary</h2></div></div><div id="reportSummaryPanel"></div></aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-budget" data-view-panel="budget">
+        <div class="budget-layout">
+          <article class="panel budget-panel">
+            <div class="budget-head-row">
+              <div><p class="panel-kicker">BUDGET</p><h2 id="budgetMonthTitle">Monthly budget</h2></div>
+              <div class="budget-head-labels"><span>Budget</span><span>Actual</span><span>Remaining</span></div>
+            </div>
+            <div class="budget-table" id="budgetTable"></div>
+          </article>
+          <aside class="panel budget-summary-panel"><div id="budgetSummaryPanel"></div></aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-recurring" data-view-panel="recurring">
+        <div class="feature-layout">
+          <article class="panel panel-large"><div class="panel-header stacked-mobile"><div><p class="panel-kicker">RECURRING</p><h2>Recurring income and bills</h2><p class="muted-copy">Detected from repeated merchants and descriptions in your imported transactions.</p></div></div><div class="recurring-list" id="recurringList"></div></article>
+          <aside class="panel compact-panel summary-panel"><div class="panel-header"><div><p class="panel-kicker">UPCOMING</p><h3>Expected activity</h3></div></div><div id="recurringSummary"></div></aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-goals" data-view-panel="goals">
+        <div class="feature-layout">
+          <article class="panel panel-large"><div class="panel-header stacked-mobile"><div><p class="panel-kicker">GOALS</p><h2>Household goals</h2><p class="muted-copy">Track savings targets using income minus spending from your ledger.</p></div></div><div class="goals-grid" id="goalsGrid"></div></article>
+          <aside class="panel compact-panel summary-panel"><div class="panel-header"><div><p class="panel-kicker">PROGRESS</p><h3>Goal summary</h3></div></div><div id="goalsSummary"></div></aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-advice" data-view-panel="advice">
+        <div class="feature-layout">
+          <article class="panel panel-large"><div class="panel-header stacked-mobile"><div><p class="panel-kicker">ADVICE</p><h2>Budget recommendations</h2><p class="muted-copy">Generated from the current household ledger and budget performance.</p></div></div><div class="advice-list" id="adviceList"></div></article>
+          <aside class="panel compact-panel summary-panel"><div class="panel-header"><div><p class="panel-kicker">FOCUS</p><h3>This month</h3></div></div><div id="adviceSummary"></div></aside>
+        </div>
       </section>
 
       <section class="view" id="view-import" data-view-panel="import">

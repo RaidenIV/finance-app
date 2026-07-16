@@ -1,18 +1,26 @@
 const PDF_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
 
 const DEFAULT_CATEGORIES = [
-  'Housing', 'Groceries', 'Dining', 'Transportation', 'Bills & Utilities',
-  'Shopping', 'Entertainment', 'Health & Wellness', 'Insurance', 'Education',
-  'Pets', 'Travel', 'Gifts & Donations', 'Personal Care', 'Income', 'Transfer', 'Other'
+  'Housing', 'Mortgage', 'Rent', 'Auto Payment', 'Loan Repayment', 'Insurance',
+  'Groceries', 'Dining', 'Restaurants', 'Transportation', 'Gas', 'Car Payment',
+  'Bills & Utilities', 'Gas & Electric', 'Internet & Cable', 'Phone', 'Subscriptions',
+  'Shopping', 'Clothing', 'Home Improvement', 'Furniture & Housewares', 'Entertainment',
+  'Health & Wellness', 'Fitness', 'Education', 'Pets', 'Travel', 'Gifts & Donations',
+  'Personal Care', 'Garbage', 'Income', 'Paychecks', 'Interest', 'Transfer', 'Other'
 ];
 
 const CATEGORY_COLORS = {
-  'Housing': '#ff8a00', 'Groceries': '#47c985', 'Dining': '#ff6b6b',
-  'Transportation': '#4aa3ff', 'Bills & Utilities': '#9d7bff', 'Shopping': '#f5c451',
-  'Entertainment': '#48c5c5', 'Health & Wellness': '#e577c5', 'Insurance': '#7aa4c8',
-  'Education': '#ca8cff', 'Pets': '#a3c95f', 'Travel': '#57b9e6',
-  'Gifts & Donations': '#dc8d6d', 'Personal Care': '#ed9ac4', 'Income': '#47c985',
-  'Transfer': '#4aa3ff', 'Other': '#7f8792'
+  'Housing': '#02a7c8', 'Mortgage': '#02a7c8', 'Rent': '#02a7c8',
+  'Groceries': '#ffc43d', 'Dining': '#ff6532', 'Restaurants': '#ff6532',
+  'Transportation': '#2aa876', 'Gas': '#8e5ad7', 'Car Payment': '#02a7c8',
+  'Bills & Utilities': '#5cc8df', 'Gas & Electric': '#2fb06f', 'Internet & Cable': '#95dc5a', 'Phone': '#3f72db',
+  'Shopping': '#ff6532', 'Clothing': '#71d2e8', 'Entertainment': '#d53f9d',
+  'Health & Wellness': '#dc8d6d', 'Insurance': '#8e5ad7', 'Education': '#ca8cff',
+  'Pets': '#71d2e8', 'Travel': '#2aa876', 'Gifts & Donations': '#dc8d6d',
+  'Personal Care': '#ed9ac4', 'Home Improvement': '#0ba5c2', 'Furniture & Housewares': '#2aa876',
+  'Auto Payment': '#02a7c8', 'Loan Repayment': '#2aa876', 'Garbage': '#ffc43d', 'Fitness': '#95dc5a',
+  'Subscriptions': '#d53f9d', 'Income': '#2d8a45', 'Paychecks': '#2d8a45', 'Interest': '#2d8a45',
+  'Transfer': '#2f80ed', 'Other': '#b9b4aa'
 };
 
 const DEFAULT_STATE = {
@@ -32,11 +40,16 @@ const DEFAULT_STATE = {
     { id: 'rule-2', field: 'merchant', operator: 'contains', value: 'NETFLIX', category: 'Entertainment', owner: 'shared', type: 'expense', priority: 100 }
   ],
   imports: [],
+  budgets: {},
+  goals: [
+    { id: 'goal-emergency', name: 'Emergency fund', target: 5000, saved: 0, dueDate: '' }
+  ],
   settings: { compactRows: false, hideCents: false }
 };
 
 let state = structuredClone(DEFAULT_STATE);
 let currentView = 'dashboard';
+let currentReportMode = 'spending';
 let selectedTransactionIds = new Set();
 let importDraft = null;
 let transactionPage = 1;
@@ -92,7 +105,9 @@ function normalizeLoadedState(saved) {
     accounts: Array.isArray(saved.accounts) && saved.accounts.length ? saved.accounts : structuredClone(DEFAULT_STATE.accounts),
     transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
     rules: Array.isArray(saved.rules) ? saved.rules : [],
-    imports: Array.isArray(saved.imports) ? saved.imports : []
+    imports: Array.isArray(saved.imports) ? saved.imports : [],
+    budgets: saved.budgets && typeof saved.budgets === 'object' ? saved.budgets : {},
+    goals: Array.isArray(saved.goals) && saved.goals.length ? saved.goals : structuredClone(DEFAULT_STATE.goals)
   };
   pendingImportedTypeRepairs = repairImportedTransactionTypes(normalized);
   return normalized;
@@ -853,14 +868,30 @@ function switchView(view) {
   $$('[data-view-panel]').forEach(panel => panel.classList.toggle('active', panel.dataset.viewPanel === view));
   const meta = {
     dashboard: ['OVERVIEW', `${state.household.name} Dashboard`],
-    transactions: ['LEDGER', 'Transactions'], import: ['IMPORT', 'Statement Import'],
-    rules: ['AUTOMATION', 'Categorization Rules'], settings: ['PREFERENCES', 'Settings']
-  }[view];
+    accounts: ['ACCOUNTS', 'Accounts'],
+    transactions: ['LEDGER', 'Transactions'],
+    cashflow: ['CASH FLOW', 'Cash Flow'],
+    reports: ['REPORTS', 'Reports'],
+    budget: ['BUDGET', 'Budget'],
+    recurring: ['RECURRING', 'Recurring'],
+    goals: ['GOALS', 'Goals'],
+    advice: ['ADVICE', 'Advice'],
+    import: ['IMPORT', 'Statement Import'],
+    rules: ['AUTOMATION', 'Categorization Rules'],
+    settings: ['PREFERENCES', 'Settings']
+  }[view] || ['HOMELEDGER', 'HomeLedger'];
   $('#viewEyebrow').textContent = meta[0];
   $('#viewTitle').textContent = meta[1];
-  $('#monthControlWrap').classList.toggle('hidden', !['dashboard', 'transactions'].includes(view));
+  $('#monthControlWrap').classList.toggle('hidden', !['dashboard', 'transactions', 'cashflow', 'reports', 'budget', 'recurring', 'accounts'].includes(view));
   closeSidebar();
+  if (view === 'accounts') renderAccounts();
   if (view === 'transactions') renderTransactions();
+  if (view === 'cashflow') renderCashFlowDetail();
+  if (view === 'reports') renderReports();
+  if (view === 'budget') renderBudget();
+  if (view === 'recurring') renderRecurring();
+  if (view === 'goals') renderGoals();
+  if (view === 'advice') renderAdvice();
   if (view === 'import') renderImportHistory();
   if (view === 'rules') renderRules();
   if (view === 'settings') renderSettings();
@@ -868,15 +899,21 @@ function switchView(view) {
 }
 
 function bindGeneralActions() {
-  $('#monthFilter').addEventListener('change', () => { transactionPage = 1; renderDashboard(); renderTransactions(); });
+  $('#monthFilter').addEventListener('change', () => { transactionPage = 1; renderAll(); });
   $('#quickImportBtn').addEventListener('click', () => switchView('import'));
   $('#quickAddBtn').addEventListener('click', () => openTransactionModal());
   $('#exportBackupBtn').addEventListener('click', exportBackup);
   $('#settingsExportBtn').addEventListener('click', exportBackup);
   $('#transactionSearch').addEventListener('input', debounce(() => { transactionPage = 1; renderTransactions(); }, 120));
-  $('#transactionTypeFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
+  $('#transactionTypeFilter').addEventListener('change', () => { transactionPage = 1; syncQuickTransactionView(); renderTransactions(); });
   $('#transactionOwnerFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
   $('#transactionCategoryFilter').addEventListener('change', () => { transactionPage = 1; renderTransactions(); });
+  $('#transactionQuickView').addEventListener('change', event => { $('#transactionTypeFilter').value = event.target.value; transactionPage = 1; renderTransactions(); });
+  $('#transactionSearchToggle').addEventListener('click', () => { $('#transactionFiltersCard').classList.toggle('collapsed'); $('#transactionSearch').focus({ preventScroll: true }); });
+  $('#transactionFilterToggle').addEventListener('click', () => $('#transactionFiltersCard').classList.toggle('collapsed'));
+  $('#transactionDateShortcut').addEventListener('click', () => $('#monthFilter').showPicker ? $('#monthFilter').showPicker() : $('#monthFilter').focus());
+  $('#transactionAddBtn').addEventListener('click', () => openTransactionModal());
+  $('#accountsAddAccountBtn').addEventListener('click', () => openAccountModal());
   $('#clearFiltersBtn').addEventListener('click', clearTransactionFilters);
   $('#selectAllTransactions').addEventListener('change', event => {
     visibleTransactionPage().forEach(tx => event.target.checked ? selectedTransactionIds.add(tx.id) : selectedTransactionIds.delete(tx.id));
@@ -939,11 +976,19 @@ function bindImport() {
 function renderAll() {
   hydrateAllSelects();
   renderDashboard();
+  renderAccounts();
   renderTransactions();
+  renderCashFlowDetail();
+  renderReports();
+  renderBudget();
+  renderRecurring();
+  renderGoals();
+  renderAdvice();
   renderRules();
   renderImportHistory();
   renderSettings();
   $('#transactionCount').textContent = state.transactions.length;
+  if ($('#accountCount')) $('#accountCount').textContent = state.accounts.length;
   renderSessionInfo();
 }
 
@@ -1186,8 +1231,9 @@ function renderTransactions() {
   const rows = filteredTransactions(filters);
   const visible = visibleTransactionPage(rows);
   renderTransactionFilterStatus(filters, rows, monthRows);
-  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="9">${emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.')}</td></tr>`;
+  $('#transactionTableBody').innerHTML = visible.length ? visible.map(transactionTableRow).join('') : `<tr><td colspan="8">${emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.')}</td></tr>`;
   $('#mobileTransactionList').innerHTML = visible.length ? visible.map(mobileTransactionCard).join('') : emptyState('No matching transactions', 'Adjust or clear the active filters to see more activity.');
+  renderTransactionSummaryPanel(rows, monthRows);
   bindTransactionRowEvents();
   renderPagination(rows.length);
   selectedTransactionIds = new Set([...selectedTransactionIds].filter(id => state.transactions.some(tx => tx.id === id)));
@@ -1208,11 +1254,10 @@ function transactionTableRow(tx) {
   return `<tr data-id="${tx.id}" class="transaction-row ${type}">
     <td class="checkbox-cell"><input type="checkbox" class="transaction-select" ${selectedTransactionIds.has(tx.id) ? 'checked' : ''} aria-label="Select transaction" /></td>
     <td>${formatDate(tx.date)}</td>
-    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml(tx.description || '')}</span>${bankMeta ? `<span>${escapeHtml(bankMeta)}</span>` : ''}</div></td>
+    <td><div class="transaction-main"><strong>${escapeHtml(tx.merchant || tx.description || 'Untitled transaction')}</strong><span>${escapeHtml([tx.description, memberName(tx.owner), bankMeta].filter(Boolean).join(' · '))}</span></div></td>
     <td class="type-cell"><span class="type-pill ${type}">${escapeHtml(transactionTypeLabel(type))}</span></td>
     <td><span class="category-pill">${escapeHtml(tx.category || 'Other')}</span></td>
-    <td><span class="owner-pill">${escapeHtml(memberName(tx.owner))}</span></td>
-    <td>${escapeHtml(accountName(tx.account))}</td>
+    <td><span class="account-pill">${escapeHtml(accountName(tx.account))}</span></td>
     <td class="amount-cell"><span class="amount-value ${type}">${type === 'income' ? '+' : type === 'expense' ? '−' : ''}${money(Math.abs(Number(tx.amount)))}</span></td>
     <td class="actions-cell"><button class="row-action edit-transaction" aria-label="Edit transaction"><svg viewBox="0 0 24 24"><path d="m4 16-.8 4 4-.8L18 8.4 15.6 6 4 16Z"/><path d="m13.8 7.8 2.4 2.4"/></svg></button></td>
   </tr>`;
@@ -1324,6 +1369,272 @@ function saveTransactionFromForm(event) {
     state.rules.push({ id: uid('rule'), field: 'merchant', operator: 'contains', value: tx.merchant, category: tx.category, owner: tx.owner, type: tx.type, priority: 100 });
   }
   saveState(); closeModals(); renderAll(); toast(index >= 0 ? 'Transaction updated' : 'Transaction added', `${tx.merchant} was saved to your household ledger.`);
+}
+
+
+function syncQuickTransactionView() {
+  if ($('#transactionQuickView')) $('#transactionQuickView').value = $('#transactionTypeFilter').value || 'all';
+}
+
+function monthDateLabel(key = selectedMonth()) {
+  const parsed = new Date(`${key}-01T12:00:00`);
+  return Number.isNaN(parsed.getTime()) ? key : new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(parsed);
+}
+
+function allLedgerTransactions() {
+  return [...state.transactions].sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+function transactionsForRange(mode = 'month') {
+  if (mode === 'all') return allLedgerTransactions();
+  return monthTransactions(selectedMonth());
+}
+
+function metricRowsFromTransactions(txs) {
+  const income = txs.filter(tx => transactionType(tx) === 'income').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0);
+  const expense = txs.filter(tx => transactionType(tx) === 'expense').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0);
+  const transfer = txs.filter(tx => transactionType(tx) === 'transfer').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0);
+  const excluded = txs.filter(tx => transactionType(tx) === 'excluded').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0);
+  return { income, expense, transfer, excluded, net: income - expense, count: txs.length };
+}
+
+function summaryRows(metrics) {
+  return `<div class="metric-list">
+    <div><span>Total transactions</span><strong>${metrics.count.toLocaleString()}</strong></div>
+    <div><span>Total income</span><strong class="positive">${money(metrics.income)}</strong></div>
+    <div><span>Total spending</span><strong>${money(metrics.expense)}</strong></div>
+    <div><span>Net cash flow</span><strong class="${metrics.net >= 0 ? 'positive' : 'negative'}">${money(metrics.net)}</strong></div>
+    <div><span>Transfers</span><strong>${money(metrics.transfer)}</strong></div>
+  </div>`;
+}
+
+function renderTransactionSummaryPanel(rows = filteredTransactions(), monthRows = monthTransactions(selectedMonth())) {
+  if (!$('#transactionSummaryPanel')) return;
+  const metrics = metricRowsFromTransactions(rows);
+  const amounts = rows.map(tx => Math.abs(Number(tx.amount))).filter(Number.isFinite);
+  const largest = amounts.length ? Math.max(...amounts) : 0;
+  const dates = rows.map(tx => tx.date).filter(Boolean).sort();
+  $('#transactionSummaryPanel').innerHTML = `<div class="summary-total-card"><strong>${money(metrics.net)}</strong><span>Net activity this view</span></div>
+    <div class="metric-list">
+      <div><span>Total transactions</span><strong>${rows.length.toLocaleString()}</strong></div>
+      <div><span>Largest transaction</span><strong>${money(largest)}</strong></div>
+      <div><span>Average transaction</span><strong>${money(amounts.length ? amounts.reduce((s, v) => s + v, 0) / amounts.length : 0)}</strong></div>
+      <div><span>Total income</span><strong class="positive">${money(metrics.income)}</strong></div>
+      <div><span>Total spending</span><strong>${money(metrics.expense)}</strong></div>
+      <div><span>First transaction</span><strong>${dates[0] ? formatDate(dates[0]) : '—'}</strong></div>
+      <div><span>Last transaction</span><strong>${dates.at(-1) ? formatDate(dates.at(-1)) : '—'}</strong></div>
+    </div>`;
+}
+
+function accountMetrics(accountId, txs = monthTransactions(selectedMonth())) {
+  return metricRowsFromTransactions(txs.filter(tx => tx.account === accountId));
+}
+
+function renderAccounts() {
+  if (!$('#accountsDashboardList')) return;
+  const txs = monthTransactions(selectedMonth());
+  const total = metricRowsFromTransactions(txs);
+  const maxFlow = Math.max(1, ...state.accounts.map(a => Math.abs(accountMetrics(a.id, txs).net)));
+  $('#accountPerformanceChart').innerHTML = simpleLineChart(monthlyMetricSeries('net'), 'Account activity trend');
+  $('#accountsDashboardList').innerHTML = state.accounts.length ? state.accounts.map(account => {
+    const metrics = accountMetrics(account.id, txs);
+    const width = Math.min(100, Math.abs(metrics.net) / maxFlow * 100);
+    return `<div class="account-dashboard-row" data-id="${account.id}"><div class="account-logo">${escapeHtml((account.institution || account.name || 'A').charAt(0).toUpperCase())}</div><div class="account-row-main"><strong>${escapeHtml(account.name)}</strong><span>${escapeHtml(account.type)} · ${escapeHtml(memberName(account.owner))}${account.institution ? ` · ${escapeHtml(account.institution)}` : ''}</span><div class="mini-track"><i style="width:${width}%"></i></div></div><div class="account-row-values"><strong class="${metrics.net >= 0 ? 'positive' : 'negative'}">${money(metrics.net)}</strong><span>${metrics.count} transaction${metrics.count === 1 ? '' : 's'}</span></div><button class="row-action edit-account" aria-label="Rename account"><svg viewBox="0 0 24 24"><path d="m4 16-.8 4 4-.8L18 8.4 15.6 6 4 16Z"/></svg></button></div>`;
+  }).join('') : emptyState('No accounts', 'Add an account or import a statement to begin.', true);
+  $('#accountsSummary').innerHTML = `${summaryRows(total)}<button class="button primary full-width" type="button" data-go-view="import">Import statement</button>`;
+  $$('#accountsDashboardList .edit-account').forEach(btn => btn.addEventListener('click', () => openAccountModal(state.accounts.find(a => a.id === btn.closest('[data-id]').dataset.id))));
+  $$('[data-go-view="import"]', $('#accountsSummary')).forEach(btn => btn.addEventListener('click', () => switchView('import')));
+}
+
+function monthlyMetricSeries(metric = 'expense', months = 8) {
+  const [year, month] = selectedMonth().split('-').map(Number);
+  const keys = [];
+  for (let offset = months - 1; offset >= 0; offset--) {
+    const d = new Date(year, month - 1 - offset, 1);
+    keys.push(d.toISOString().slice(0, 7));
+  }
+  return keys.map(key => ({ key, ...getMetrics(key) })).map(item => ({ label: new Date(`${item.key}-01T12:00:00`).toLocaleDateString(undefined, { month: 'short' }), value: item[metric] || 0, key: item.key }));
+}
+
+function simpleLineChart(data, label = 'Trend') {
+  const width = 720, height = 220, left = 44, right = 18, top = 18, bottom = 34;
+  const max = Math.max(1, ...data.map(d => Math.abs(d.value)));
+  const step = data.length > 1 ? (width - left - right) / (data.length - 1) : 1;
+  const zeroY = top + (height - top - bottom) * 0.72;
+  const points = data.map((d, i) => {
+    const x = left + i * step;
+    const y = zeroY - (d.value / max) * (height - top - bottom) * 0.56;
+    return `${x},${Math.max(top, Math.min(height - bottom, y))}`;
+  }).join(' ');
+  const labels = data.map((d, i) => `<text class="chart-axis-label" text-anchor="middle" x="${left + i * step}" y="${height - 9}">${escapeHtml(d.label)}</text>`).join('');
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}"><line class="chart-grid-line" x1="${left}" x2="${width-right}" y1="${zeroY}" y2="${zeroY}"/>${labels}<polyline class="line-chart-path" points="${points}" fill="none"/><g>${data.map((d, i) => `<circle class="line-chart-point" cx="${left + i * step}" cy="${(points.split(' ')[i] || '0,0').split(',')[1]}" r="4"/>`).join('')}</g></svg>`;
+}
+
+function stackedBarChart(data, mode = 'expense') {
+  const width = 920, height = 280, left = 70, right = 24, top = 24, bottom = 42;
+  const max = Math.max(1, ...data.map(d => d.total));
+  const groupW = (width - left - right) / Math.max(1, data.length);
+  let svg = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(mode)} bar chart">`;
+  for (let i = 0; i <= 3; i++) {
+    const y = top + (height - top - bottom) * (i / 3);
+    const val = max * (1 - i / 3);
+    svg += `<line class="chart-grid-line" x1="${left}" x2="${width-right}" y1="${y}" y2="${y}"/><text class="chart-axis-label" x="2" y="${y+4}">${compactMoney(val)}</text>`;
+  }
+  data.forEach((d, i) => {
+    const barW = Math.min(52, groupW * .52);
+    const x = left + i * groupW + (groupW - barW) / 2;
+    let running = height - bottom;
+    d.parts.forEach(part => {
+      const h = (part.value / max) * (height - top - bottom);
+      running -= h;
+      svg += `<rect x="${x}" y="${running}" width="${barW}" height="${Math.max(1, h)}" rx="2" fill="${categoryColor(part.name)}"/>`;
+    });
+    svg += `<text class="chart-axis-label" text-anchor="middle" x="${x + barW/2}" y="${height - 12}">${escapeHtml(d.label)}</text>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function renderCashFlowDetail() {
+  if (!$('#cashFlowDetailChart')) return;
+  const data = monthlyMetricSeries('net', 9);
+  $('#cashFlowDetailChart').innerHTML = simpleLineChart(data, 'Net cash flow by month');
+  const current = getMetrics(selectedMonth());
+  const prev = getMetrics(previousMonth(selectedMonth()));
+  $('#cashFlowSummary').innerHTML = `<div class="summary-total-card"><strong class="${current.net >= 0 ? 'positive' : 'negative'}">${money(current.net)}</strong><span>${monthDateLabel()} net cash flow</span></div>${summaryRows({ ...current, transfer: monthTransactions(selectedMonth()).filter(tx => transactionType(tx) === 'transfer').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0) })}<div class="metric-list"><div><span>Change from previous month</span><strong class="${current.net - prev.net >= 0 ? 'positive' : 'negative'}">${money(current.net - prev.net)}</strong></div></div>`;
+}
+
+function reportBreakdown(mode = currentReportMode) {
+  const txs = allLedgerTransactions().filter(tx => mode === 'income' ? transactionType(tx) === 'income' : mode === 'cashflow' ? !['transfer','excluded'].includes(transactionType(tx)) : transactionType(tx) === 'expense');
+  const map = new Map();
+  txs.forEach(tx => {
+    const key = mode === 'cashflow' ? transactionTypeLabel(transactionType(tx)) : (tx.category || 'Other');
+    map.set(key, (map.get(key) || 0) + Math.abs(Number(tx.amount)));
+  });
+  return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+}
+
+function renderReports() {
+  if (!$('#reportChartLayout')) return;
+  $$('.report-subtab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.reportMode === currentReportMode);
+    btn.onclick = () => { currentReportMode = btn.dataset.reportMode; renderReports(); };
+  });
+  const data = reportBreakdown(currentReportMode);
+  const total = data.reduce((s, item) => s + item.value, 0);
+  const titleMap = { spending: 'Spending by category', cashflow: 'Cash flow by type', income: 'Income by source' };
+  $('#reportKicker').textContent = titleMap[currentReportMode].toUpperCase();
+  $('#reportTitle').textContent = 'All time';
+  const size = 250, center = 125, radius = 82, stroke = 27, circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  const circles = total ? data.slice(0, 10).map(item => {
+    const fraction = item.value / total;
+    const dash = Math.max(0, fraction * circumference - 2.5);
+    const circle = `<circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="${categoryColor(item.name)}" stroke-width="${stroke}" stroke-dasharray="${dash} ${circumference-dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${center} ${center})"/>`;
+    offset += fraction * circumference;
+    return circle;
+  }).join('') : '';
+  const legend = data.slice(0, 12).map(item => `<div class="report-legend-row"><i style="background:${categoryColor(item.name)}"></i><span>${escapeHtml(item.name)}<strong>${money(item.value)} (${total ? (item.value / total * 100).toFixed(1) : '0.0'}%)</strong></span></div>`).join('');
+  $('#reportChartLayout').innerHTML = total ? `<div class="report-donut"><svg viewBox="0 0 ${size} ${size}" role="img" aria-label="Report donut"><circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="#ece8df" stroke-width="${stroke}"/>${circles}<text class="donut-center-value" x="${center}" y="${center-4}" text-anchor="middle">${escapeHtml(compactMoney(total))}</text><text class="donut-center-label" x="${center}" y="${center+18}" text-anchor="middle">Total</text></svg></div><div class="report-legend-grid">${legend}</div>` : emptyState('No report data', 'Import transactions to generate this report.');
+  const txs = allLedgerTransactions().filter(tx => currentReportMode === 'income' ? transactionType(tx) === 'income' : currentReportMode === 'spending' ? transactionType(tx) === 'expense' : !['transfer','excluded'].includes(transactionType(tx))).slice(0, 6);
+  $('#reportTransactionsList').innerHTML = txs.length ? txs.map(tx => recentRow(tx)).join('') : emptyState('No transactions', 'No transactions match this report yet.');
+  const metrics = metricRowsFromTransactions(txs.length ? allLedgerTransactions() : []);
+  $('#reportSummaryPanel').innerHTML = summaryRows(metrics);
+}
+
+function budgetKey() { return selectedMonth(); }
+function getBudgetFor(category) { return Number(state.budgets?.[budgetKey()]?.[category] || 0); }
+function setBudgetFor(category, value) {
+  state.budgets ||= {};
+  state.budgets[budgetKey()] ||= {};
+  state.budgets[budgetKey()][category] = Math.max(0, Number(value || 0));
+}
+
+function renderBudget() {
+  if (!$('#budgetTable')) return;
+  $('#budgetMonthTitle').textContent = `${monthDateLabel()} budget`;
+  const month = selectedMonth();
+  const expenseData = categoryBreakdown(month);
+  const incomeActual = reportingTransactions(month).filter(tx => transactionType(tx) === 'income').reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0);
+  const incomeBudget = getBudgetFor('Income') || incomeActual;
+  const expenseCategories = [...new Set([...expenseData.map(d => d.name), 'Housing', 'Groceries', 'Bills & Utilities', 'Transportation', 'Dining', 'Shopping', 'Subscriptions'])];
+  const expenseRows = expenseCategories.map(category => ({ category, actual: expenseData.find(d => d.name === category)?.value || 0, budget: getBudgetFor(category) }));
+  const totalExpenseBudget = expenseRows.reduce((s, row) => s + row.budget, 0);
+  const totalExpenseActual = expenseRows.reduce((s, row) => s + row.actual, 0);
+  const incomeRemaining = incomeBudget - incomeActual;
+  const sections = [
+    { name: 'Income', rows: [{ category: 'Paychecks', budgetCategory: 'Income', actual: incomeActual, budget: incomeBudget }], kind: 'income' },
+    { name: 'Expenses', rows: expenseRows, kind: 'expense' }
+  ];
+  $('#budgetTable').innerHTML = sections.map(section => `<div class="budget-section"><div class="budget-section-row"><button type="button" aria-label="Expand ${section.name}">⌄</button><strong>${section.name}</strong><span>${money(section.rows.reduce((s,r)=>s+r.budget,0))}</span><span>${money(section.rows.reduce((s,r)=>s+r.actual,0))}</span><span class="${section.kind === 'income' ? 'positive' : (section.rows.reduce((s,r)=>s+r.budget-r.actual,0) >= 0 ? 'positive' : 'negative')}">${money(section.rows.reduce((s,r)=>s+r.budget-r.actual,0))}</span></div>${section.rows.map(row => budgetRow(row, section.kind)).join('')}</div>`).join('');
+  $$('#budgetTable .budget-input').forEach(input => input.addEventListener('change', event => { setBudgetFor(event.target.dataset.category, event.target.value); saveState(); renderBudget(); }));
+  const left = incomeActual - totalExpenseActual;
+  $('#budgetSummaryPanel').innerHTML = `<div class="budget-left-card"><strong>${money(left)}</strong><span>${left >= 0 ? 'Left after spending' : 'Over income'}</span></div><div class="budget-tabs"><button class="active" type="button">Summary</button><button type="button">Income</button><button type="button">Expenses</button></div><div class="budget-summary-list"><div><span>Income actual</span><strong>${money(incomeActual)}</strong></div><div><span>Expense budget</span><strong>${money(totalExpenseBudget)}</strong></div><div><span>Expense actual</span><strong>${money(totalExpenseActual)}</strong></div><div><span>Remaining budget</span><strong class="${totalExpenseBudget - totalExpenseActual >= 0 ? 'positive' : 'negative'}">${money(totalExpenseBudget - totalExpenseActual)}</strong></div></div>`;
+}
+
+function budgetRow(row, kind) {
+  const category = row.budgetCategory || row.category;
+  const remaining = row.budget - row.actual;
+  const width = row.budget ? Math.min(100, (row.actual / row.budget) * 100) : (row.actual ? 100 : 0);
+  return `<div class="budget-line ${kind}"><span class="budget-category"><i style="background:${categoryColor(row.category)}"></i>${escapeHtml(row.category)}</span><span><input class="budget-input" data-category="${escapeHtml(category)}" type="number" min="0" step="1" value="${row.budget ? row.budget.toFixed(0) : ''}" placeholder="0" /></span><span>${money(row.actual)}</span><span class="${remaining >= 0 ? 'positive' : 'negative'}">${money(remaining)}</span><em style="width:${width}%"></em></div>`;
+}
+
+function recurringCandidates() {
+  const byName = new Map();
+  allLedgerTransactions().forEach(tx => {
+    const key = normalizeFilterText(tx.merchant || tx.description || 'Unknown');
+    if (!key) return;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(tx);
+  });
+  return [...byName.values()].filter(rows => rows.length >= 2).map(rows => {
+    rows.sort((a,b) => String(a.date).localeCompare(String(b.date)));
+    const avg = rows.reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0) / rows.length;
+    const gaps = rows.slice(1).map((tx, i) => daysBetween(tx.date, rows[i].date));
+    const avgGap = gaps.length ? gaps.reduce((s, v) => s + v, 0) / gaps.length : 30;
+    const last = rows.at(-1);
+    const next = new Date(`${last.date}T12:00:00`); next.setDate(next.getDate() + Math.round(avgGap || 30));
+    return { name: last.merchant || last.description || 'Unknown', category: last.category || 'Other', type: transactionType(last), count: rows.length, avg, avgGap, nextDate: next.toISOString().slice(0,10) };
+  }).sort((a,b) => b.avg - a.avg).slice(0, 12);
+}
+
+function renderRecurring() {
+  if (!$('#recurringList')) return;
+  const rows = recurringCandidates();
+  $('#recurringList').innerHTML = rows.length ? rows.map(item => `<div class="recurring-row ${item.type}"><div class="transaction-icon ${item.type}">${escapeHtml(item.name.charAt(0).toUpperCase())}</div><div><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.category)} · about every ${Math.round(item.avgGap)} days · ${item.count} hits</span></div><div><strong>${money(item.avg)}</strong><span>Next around ${formatDate(item.nextDate)}</span></div></div>`).join('') : emptyState('No recurring activity detected', 'Import more statement history to identify recurring bills and income.');
+  $('#recurringSummary').innerHTML = summaryRows(metricRowsFromTransactions(rows.map(item => ({ amount: item.type === 'expense' ? -item.avg : item.avg, type: item.type }))));
+}
+
+function renderGoals() {
+  if (!$('#goalsGrid')) return;
+  const netAllTime = allLedgerTransactions().filter(tx => !['transfer','excluded'].includes(transactionType(tx))).reduce((s, tx) => s + (transactionType(tx) === 'income' ? Math.abs(Number(tx.amount)) : -Math.abs(Number(tx.amount))), 0);
+  $('#goalsGrid').innerHTML = state.goals.map(goal => {
+    const saved = Math.max(0, Number(goal.saved || 0) + Math.max(0, netAllTime));
+    const target = Math.max(1, Number(goal.target || 1));
+    const pct = Math.min(100, saved / target * 100);
+    return `<div class="goal-card" data-id="${goal.id}"><div class="goal-card-head"><strong>${escapeHtml(goal.name)}</strong><span>${pct.toFixed(0)}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><div class="goal-fields"><label>Target <input class="goal-target-input" type="number" min="1" step="100" value="${target}" /></label><label>Starting saved <input class="goal-saved-input" type="number" min="0" step="100" value="${Number(goal.saved || 0)}" /></label></div><p>${money(saved)} of ${money(target)}</p></div>`;
+  }).join('');
+  $$('#goalsGrid .goal-target-input').forEach(input => input.addEventListener('change', event => { const goal = state.goals.find(g => g.id === event.target.closest('[data-id]').dataset.id); goal.target = Number(event.target.value || 0); saveState(); renderGoals(); }));
+  $$('#goalsGrid .goal-saved-input').forEach(input => input.addEventListener('change', event => { const goal = state.goals.find(g => g.id === event.target.closest('[data-id]').dataset.id); goal.saved = Number(event.target.value || 0); saveState(); renderGoals(); }));
+  const first = state.goals[0];
+  $('#goalsSummary').innerHTML = `<div class="summary-total-card"><strong>${money(Math.max(0, netAllTime))}</strong><span>All-time positive cash flow available for goals</span></div><div class="metric-list"><div><span>Active goals</span><strong>${state.goals.length}</strong></div><div><span>Primary target</span><strong>${money(first?.target || 0)}</strong></div></div>`;
+}
+
+function renderAdvice() {
+  if (!$('#adviceList')) return;
+  const month = selectedMonth();
+  const metrics = getMetrics(month);
+  const breakdown = categoryBreakdown(month);
+  const budgetRows = breakdown.map(item => ({ ...item, budget: getBudgetFor(item.name) })).filter(item => item.budget);
+  const overBudget = budgetRows.filter(item => item.value > item.budget);
+  const items = [];
+  if (metrics.income && metrics.rate < 10) items.push({ title: 'Increase savings margin', text: `Your selected-month savings rate is ${metrics.rate.toFixed(1)}%. Aim for at least 10–20% by reducing flexible categories first.` });
+  if (overBudget.length) items.push({ title: 'Review over-budget categories', text: `${overBudget[0].name} is ${money(overBudget[0].value - overBudget[0].budget)} over budget this month.` });
+  if (breakdown[0]) items.push({ title: `Watch ${breakdown[0].name}`, text: `${breakdown[0].name} is your largest spending category at ${money(breakdown[0].value)} for ${monthDateLabel(month)}.` });
+  if (!state.transactions.length) items.push({ title: 'Import transaction history', text: 'Upload checking and credit-card statements to unlock budget, recurring, and report insights.' });
+  if (!items.length) items.push({ title: 'Spending is organized', text: 'Your current month has positive cash flow and no obvious budget exceptions.' });
+  $('#adviceList').innerHTML = items.map((item, index) => `<div class="advice-card"><span>${index + 1}</span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.text)}</p></div></div>`).join('');
+  $('#adviceSummary').innerHTML = `<div class="summary-total-card"><strong class="${metrics.net >= 0 ? 'positive' : 'negative'}">${money(metrics.net)}</strong><span>${monthDateLabel()} net cash flow</span></div>${summaryRows({ ...metrics, transfer: 0 })}`;
 }
 
 function renderRules() {
