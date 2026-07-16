@@ -1648,3 +1648,97 @@ input:focus, select:focus, textarea:focus {
     text-align: left;
   }
 }
+
+
+/* Targeted fixes: account updates, budget summary, account chart containment, and removed menu controls */
+.sidebar-close,
+.mobile-menu {
+  display: none !important;
+}
+
+#budgetSummaryPanel {
+  padding: 14px 18px 20px;
+}
+
+.budget-summary-panel {
+  overflow: visible;
+}
+
+.budget-left-card {
+  margin: 0 0 18px;
+  border-radius: 12px;
+}
+
+.budget-tabs {
+  width: 100%;
+  justify-content: center;
+  gap: 8px;
+}
+
+.budget-tabs button {
+  white-space: nowrap;
+}
+
+.budget-summary-list {
+  width: 100%;
+  min-width: 0;
+}
+
+.budget-summary-list > div {
+  grid-template-columns: minmax(118px, 1fr) max-content;
+  gap: 18px;
+}
+
+.budget-summary-list span {
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.budget-summary-list strong {
+  min-width: max-content;
+}
+
+.account-overview-panel {
+  overflow: hidden;
+}
+
+.account-performance {
+  position: relative;
+  z-index: 0;
+  height: 190px;
+  margin: 18px 0 30px;
+  padding: 10px 12px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.account-performance svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: hidden;
+}
+
+.account-dashboard-list {
+  position: relative;
+  z-index: 1;
+  clear: both;
+}
+
+@media (max-width: 920px) {
+  .sidebar-close,
+  .mobile-menu {
+    display: none !important;
+  }
+
+  #budgetSummaryPanel {
+    padding: 14px 16px 18px;
+  }
+
+  .account-performance {
+    height: 170px;
+    margin-bottom: 24px;
+  }
+}

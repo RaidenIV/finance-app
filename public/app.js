@@ -854,9 +854,9 @@ function init() {
 function bindNavigation() {
   $$('.nav-item').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
   $$('[data-go-view]').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.goView)));
-  $('#mobileMenu').addEventListener('click', openSidebar);
-  $('#sidebarClose').addEventListener('click', closeSidebar);
-  $('#sidebarScrim').addEventListener('click', closeSidebar);
+  $('#mobileMenu')?.addEventListener('click', openSidebar);
+  $('#sidebarClose')?.addEventListener('click', closeSidebar);
+  $('#sidebarScrim')?.addEventListener('click', closeSidebar);
 }
 
 function openSidebar() { $('#sidebar').classList.add('open'); $('#sidebarScrim').classList.add('open'); }
@@ -1732,7 +1732,11 @@ function saveAccountFromForm(event) {
   const account = { id, name: $('#accountNameInput').value.trim(), type: $('#accountTypeInput').value, owner: $('#accountOwnerInput').value, institution: $('#accountInstitutionInput').value.trim() };
   const index = state.accounts.findIndex(item => item.id === id);
   if (index >= 0) state.accounts[index] = account; else state.accounts.push(account);
-  saveState(); closeModals(); hydrateAllSelects(); renderSettings(); toast(index >= 0 ? 'Account updated' : 'Account added', `${account.name} is ready for statement imports.`);
+  saveState();
+  closeModals();
+  hydrateAllSelects();
+  renderAll();
+  toast(index >= 0 ? 'Account updated' : 'Account added', `${account.name} is ready for statement imports.`);
 }
 
 function applyDisplaySettings() { document.body.classList.toggle('compact-rows', !!state.settings.compactRows); }
